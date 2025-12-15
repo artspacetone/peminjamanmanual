@@ -1,4 +1,3 @@
-// ... (Import bagian atas TETAP SAMA seperti sebelumnya)
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from './lib/supabaseClient';
 import { fetchInventory, markItemAsScanned, uploadBulkInventory, clearAllData, resetInventoryStatus } from './services/inventoryService';
@@ -11,14 +10,12 @@ import { InventoryTable } from './components/InventoryTable';
 import { CameraScanner } from './components/CameraScanner';
 
 const App: React.FC = () => {
-  // ... (Bagian Logic State & Function TETAP SAMA, copy dari file App.tsx sebelumnya)
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [lastScanFeedback, setLastScanFeedback] = useState<ScanFeedback>({ status: 'IDLE', message: '' });
   const [isLoading, setIsLoading] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
 
-  // Load initial data
   const loadData = async () => {
     setIsLoading(true);
     try {
@@ -41,29 +38,45 @@ const App: React.FC = () => {
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    if(!confirm("Upload data?")) return;
+    if(!confirm("Upload data? Harga dan data lain akan diperbarui berdasarkan Barcode.")) return;
     setIsLoading(true);
     try {
       const data = await parseExcelFile(file);
       await uploadBulkInventory(data);
-      alert(`Import Berhasil!`);
+      alert(`Berhasil import ${data.length} data dengan harga terupdate.`);
     } catch (error: any) { alert(`Gagal: ${error.message}`); } 
     finally { setIsLoading(false); event.target.value = ''; }
   };
 
   const handleExport = (filterType: 'ALL' | 'SCANNED' | 'PENDING') => {
-    if (inventory.length === 0) { alert("Kosong."); return; }
+    if (inventory.length === 0) { alert("Data Kosong."); return; }
+    
     let dataToExport = inventory;
     let fileName = "StockOpname_ALL";
+
     if (filterType === 'SCANNED') { dataToExport = inventory.filter(i => i.is_scanned); fileName = "SO_SUDAH"; } 
     else if (filterType === 'PENDING') { dataToExport = inventory.filter(i => !i.is_scanned); fileName = "SO_BELUM"; }
+
+    if (dataToExport.length === 0) { alert("Tidak ada data untuk kategori ini."); return; }
     
     const headers = ["Barcode,Item Name,Status,Color,Brand,Price,Type,Is Scanned,Scan Time"];
-    const rows = dataToExport.map(i => `${i.barcode},"${i.item_name?.replace(/"/g, '""')}",${i.status},${i.color},${i.brand},${i.price},${i.type},${i.is_scanned ? 'YES' : 'NO'},${i.scan_timestamp ? new Date(i.scan_timestamp).toLocaleString() : "-"}`);
+    
+    const rows = dataToExport.map(i => {
+        // Sanitasi Data CSV
+        const safeName = i.item_name ? i.item_name.replace(/"/g, '""') : "";
+        const scanTime = i.scan_timestamp ? new Date(i.scan_timestamp).toLocaleString() : "-";
+        // Pastikan harga angka bulat
+        const safePrice = i.price ? Number(i.price).toFixed(0) : "0";
+        
+        return `${i.barcode},"${safeName}",${i.status},${i.color},${i.brand},${safePrice},${i.type},${i.is_scanned ? 'YES' : 'NO'},${scanTime}`;
+    });
+
     const csvContent = headers.concat(rows).join("\n");
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement("a"); link.href = url; link.setAttribute("download", `${fileName}.csv`);
+    const link = document.createElement("a"); 
+    link.href = url; 
+    link.setAttribute("download", `${fileName}_${Date.now()}.csv`);
     document.body.appendChild(link); link.click(); document.body.removeChild(link);
   };
 
@@ -85,7 +98,6 @@ const App: React.FC = () => {
 
   return (
     <div className="fixed inset-0 bg-slate-50 flex flex-col font-sans overflow-hidden">
-      {/* Navbar Fixed */}
       <header className="bg-white shadow-sm z-30 shrink-0">
         <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -111,18 +123,10 @@ const App: React.FC = () => {
           </div>
         </div>
       </header>
-
-      {/* Main Content: SCROLLABLE AREA */}
       <main className="flex-1 w-full max-w-7xl mx-auto overflow-y-auto lg:overflow-hidden flex flex-col lg:flex-row gap-4 p-3 lg:p-6">
-        
-        {/* Bagian Scanner */}
         <div className="w-full lg:w-5/12 flex flex-col shrink-0">
-          {/* Dashboard Stats sekarang Grid 2x2 jadi lebih pendek */}
           <DashboardStats total={inventory.length} scanned={inventory.filter(i => i.is_scanned).length} />
-          
-          {/* Feedback Display ditaruh DI ATAS Scanner Input agar langsung terlihat mata */}
           <FeedbackDisplay feedback={lastScanFeedback} />
-
           <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-200 flex flex-col gap-3">
              <ScannerInput onScan={handleScan} lastResult={lastScanFeedback.status} isProcessing={isProcessing} />
              <button onClick={() => setShowCamera(true)} className="w-full py-3 bg-indigo-600 active:bg-indigo-800 text-white rounded-xl shadow-md font-bold flex justify-center gap-2 items-center text-base">
@@ -130,14 +134,10 @@ const App: React.FC = () => {
              </button>
           </div>
         </div>
-
-        {/* Bagian Tabel */}
         <div className="w-full lg:w-7/12 flex flex-col shrink-0 h-[400px] lg:h-full pb-10">
           <InventoryTable items={inventory} />
         </div>
-
       </main>
-
       {showCamera && <CameraScanner onScanSuccess={(code) => { handleScan(code); setShowCamera(false); }} onClose={() => setShowCamera(false)} />}
     </div>
   );
