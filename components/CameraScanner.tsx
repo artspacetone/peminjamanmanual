@@ -9,60 +9,67 @@ interface CameraScannerProps {
 export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onClose }) => {
   const [cameras, setCameras] = useState<any[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('');
-  const [isIOS, setIsIOS] = useState(false);
+  const [cameraLabel, setCameraLabel] = useState<string>('Memuat kamera...');
   
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const containerId = "reader-custom-view";
 
   useEffect(() => {
-    // Deteksi iOS yang lebih akurat
-    const iOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-    setIsIOS(iOS);
-
     const initCamera = async () => {
       try {
-        await Html5Qrcode.getCameras();
+        await Html5Qrcode.getCameras(); // Trigger Permission
         const devices = await Html5Qrcode.getCameras();
+        
         if (devices && devices.length) {
-          setCameras(devices);
+          // LOGIKA FILTER KAMERA IPHONE (ANTI ULTRA WIDE)
+          // Kita cari kamera belakang, TAPI buang yang ada tulisan 'Ultra' atau '0.5'
+          const backCameras = devices.filter(d => {
+              const label = d.label.toLowerCase();
+              return (label.includes('back') || label.includes('rear') || label.includes('belakang')) 
+                     && !label.includes('ultra') 
+                     && !label.includes('0.5');
+          });
+
+          // Jika filter di atas kosong (misal nama kameranya aneh), ambil semua back camera
+          const finalCandidates = backCameras.length > 0 ? backCameras : devices.filter(d => d.label.toLowerCase().includes('back'));
           
-          // Prioritas Kamera Belakang
-          let backCam = devices.find(d => d.label.toLowerCase().includes('back') || d.label.toLowerCase().includes('rear'));
-          // Ambil yang terakhir (biasanya Main Camera di iPhone)
-          if (!backCam && devices.length > 1) backCam = devices[devices.length - 1];
+          // Fallback terakhir: ambil kamera apapun
+          const validCameras = finalCandidates.length > 0 ? finalCandidates : devices;
           
-          setSelectedCameraId(backCam ? backCam.id : devices[0].id);
+          setCameras(devices); // Simpan semua untuk dropdown (opsional user ganti)
+          
+          // Pilih kandidat terbaik (biasanya yang terakhir di list adalah kamera utama High Res)
+          const bestCam = validCameras[validCameras.length - 1];
+          
+          setSelectedCameraId(bestCam.id);
+          setCameraLabel(bestCam.label);
         }
       } catch (err) {
-        alert("Gagal akses kamera.");
+        alert("Gagal akses kamera. Pastikan izin browser diberikan.");
       }
     };
+
     initCamera();
     return () => { stopScanner(); };
   }, []);
 
   const startScanner = async (cameraId: string) => {
     if (scannerRef.current) await stopScanner();
+    
+    // Reset Element
+    const oldEl = document.getElementById(containerId);
+    if(oldEl) oldEl.innerHTML = "";
+
     const html5QrCode = new Html5Qrcode(containerId);
     scannerRef.current = html5QrCode;
 
-    // CONFIG RAHASIA IPHONE:
-    // 1. Jangan set width/height constraint (biar auto fokus jalan)
-    // 2. Gunakan 'advanced' property untuk zoom
-    const videoConstraints = {
-        facingMode: "environment",
-        focusMode: "continuous", // Android Only
-        // Trik Zoom: Mencoba meminta zoom level jika browser support
-        advanced: [{ zoom: 2.0 }] 
-    };
-
     const config = {
-      fps: 30, // Wajib tinggi
-      qrbox: { width: 250, height: 250 }, // Kotak standar (jangan gepeng, iPhone lebih suka kotak)
+      fps: 30, // Max FPS
+      qrbox: { width: 300, height: 150 }, // Persegi Panjang (Cocok untuk Barcode Baju)
       aspectRatio: 1.0,
-      disableFlip: false, // Jangan mirror
+      disableFlip: false,
       formatsToSupport: [
-          Html5QrcodeSupportedFormats.CODE_128, // Paling penting untuk retail
+          Html5QrcodeSupportedFormats.CODE_128,
           Html5QrcodeSupportedFormats.EAN_13,
           Html5QrcodeSupportedFormats.CODE_39,
           Html5QrcodeSupportedFormats.UPC_A,
@@ -73,20 +80,28 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onC
     try {
       await html5QrCode.start(
         cameraId,
-        config,
+        {
+           fps: 30,
+           qrbox: { width: 300, height: 150 },
+           // KHUSUS IOS: Resolusi Rendah = Lebih Cepat & Fokus
+           videoConstraints: {
+               width: 640, 
+               height: 480,
+               facingMode: "environment"
+           }
+        },
         (decodedText) => {
-           // Sukses Scan
            if (navigator.vibrate) navigator.vibrate(200);
            onScanSuccess(decodedText);
            stopScanner();
         },
-        () => {} // Abaikan frame kosong
+        () => {}
       );
     } catch (err) {
       console.error("Start failed", err);
-      // Fallback mode jika config di atas gagal (untuk HP lama)
+      // Retry Mode Basic jika gagal
       try {
-         await html5QrCode.start(cameraId, { fps: 15, qrbox: 200 }, (t)=>onScanSuccess(t), ()=>{});
+         await html5QrCode.start(cameraId, { fps: 20, qrbox: 250 }, (t)=>onScanSuccess(t), ()=>{});
       } catch(e) {}
     }
   };
@@ -103,29 +118,10 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onC
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black p-0 sm:p-4">
-      
-      {/* CSS Animasi Laser (Disuntik Langsung) */}
-      <style>{`
-        @keyframes scan-laser {
-            0% { top: 0; opacity: 0; box-shadow: 0 0 5px red; }
-            20% { opacity: 1; }
-            80% { opacity: 1; }
-            100% { top: 100%; opacity: 0; box-shadow: 0 0 20px red; }
-        }
-        .laser-line {
-            position: absolute;
-            width: 100%;
-            height: 2px;
-            background: #ef4444; /* Merah */
-            box-shadow: 0 0 10px #ef4444;
-            animation: scan-laser 2s infinite linear;
-            left: 0;
-            z-index: 20;
-        }
-      `}</style>
-
       <div className="bg-slate-900 w-full max-w-md h-full flex flex-col relative">
-        <div className="p-4 bg-slate-800 flex justify-between items-center shrink-0 z-20">
+        
+        {/* Header */}
+        <div className="p-4 bg-slate-800 flex justify-between items-center shrink-0 z-20 shadow-md border-b border-slate-700">
           <h3 className="text-white font-bold flex items-center gap-2">
              <i className="fa-solid fa-qrcode text-blue-400"></i> Scanner
           </h3>
@@ -134,39 +130,48 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onC
           </button>
         </div>
 
+        {/* Viewport */}
         <div className="flex-1 relative bg-black flex items-center justify-center overflow-hidden">
-             {/* VIDEO LIBRARY */}
              <div id="reader-custom-view" className="w-full h-full object-cover"></div>
              
-             {/* OVERLAY ANIMASI (MANUAL DIV) */}
+             {/* Overlay Laser Hijau (Lebih Kontras) */}
              <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-10">
-                <div className="w-[260px] h-[260px] border-[3px] border-white/30 rounded-lg relative overflow-hidden">
-                    {/* Laser Merah */}
-                    <div className="laser-line"></div>
+                <div className="w-[300px] h-[150px] border-[3px] border-green-400/50 rounded-lg relative box-border shadow-[0_0_50px_rgba(0,0,0,0.8)_inset]">
+                    {/* Garis Laser */}
+                    <div className="absolute w-full h-[2px] bg-green-400 shadow-[0_0_10px_#4ade80] top-1/2 animate-pulse"></div>
                     
-                    {/* Sudut Penanda */}
-                    <div className="absolute top-0 left-0 w-4 h-4 border-t-4 border-l-4 border-blue-500"></div>
-                    <div className="absolute top-0 right-0 w-4 h-4 border-t-4 border-r-4 border-blue-500"></div>
-                    <div className="absolute bottom-0 left-0 w-4 h-4 border-b-4 border-l-4 border-blue-500"></div>
-                    <div className="absolute bottom-0 right-0 w-4 h-4 border-b-4 border-r-4 border-blue-500"></div>
-                    
-                    <p className="absolute bottom-2 w-full text-center text-white text-[10px] bg-black/40 py-1">
-                        Jaga Jarak 15-20cm
-                    </p>
+                    {/* Pojokan */}
+                    <div className="absolute top-0 left-0 w-4 h-4 border-t-4 border-l-4 border-green-500"></div>
+                    <div className="absolute top-0 right-0 w-4 h-4 border-t-4 border-r-4 border-green-500"></div>
+                    <div className="absolute bottom-0 left-0 w-4 h-4 border-b-4 border-l-4 border-green-500"></div>
+                    <div className="absolute bottom-0 right-0 w-4 h-4 border-b-4 border-r-4 border-green-500"></div>
                 </div>
+             </div>
+             
+             <div className="absolute bottom-10 w-full text-center z-20">
+                 <p className="text-white text-xs font-bold bg-black/60 inline-block px-4 py-1 rounded-full">
+                    Jarak Optimal: 15cm - 20cm
+                 </p>
              </div>
         </div>
 
-        <div className="p-5 bg-slate-800 shrink-0 z-20">
-           <label className="text-slate-400 text-xs font-bold mb-2 block uppercase">Kamera:</label>
+        {/* Controls */}
+        <div className="p-5 bg-slate-800 shrink-0 z-20 border-t border-slate-700">
+           <div className="flex justify-between items-center mb-2">
+               <label className="text-slate-400 text-[10px] uppercase font-bold">Kamera Aktif</label>
+               <span className="text-green-400 text-[10px] font-bold animate-pulse">● LIVE</span>
+           </div>
+           
            <div className="flex gap-2">
                <select 
-                 className="flex-1 bg-white text-slate-900 font-bold p-3 rounded outline-none border-2 border-blue-500 text-sm"
+                 className="flex-1 bg-white text-slate-900 font-bold p-3 rounded outline-none border-2 border-blue-500 text-xs"
                  value={selectedCameraId}
                  onChange={(e) => setSelectedCameraId(e.target.value)}
                >
                  {cameras.map((cam) => (
-                   <option key={cam.id} value={cam.id}>{cam.label || `Cam ${cam.id.slice(0,4)}`}</option>
+                   <option key={cam.id} value={cam.id}>
+                     {cam.label.replace(/camera/gi, '').substring(0, 25)}...
+                   </option>
                  ))}
                </select>
                <button 
@@ -176,7 +181,9 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onC
                 <i className="fa-solid fa-rotate"></i>
                </button>
            </div>
-           {isIOS && <p className="text-[10px] text-yellow-500 mt-2 text-center">Tips iPhone: Jangan terlalu dekat (min 15cm)</p>}
+           <p className="text-[10px] text-slate-500 mt-2 text-center">
+             Menggunakan: {cameraLabel}
+           </p>
         </div>
       </div>
     </div>

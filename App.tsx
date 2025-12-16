@@ -6,6 +6,8 @@ import {
   fetchAllForExport 
 } from './services/inventoryService';
 import { parseExcelFile } from './services/excelService';
+// IMPORT AUDIO SERVICE BARU
+import { playBeep } from './services/audioService';
 import { InventoryItem, ScanFeedback } from './types';
 import { ScannerInput } from './components/ScannerInput';
 import { DashboardStats } from './components/DashboardStats';
@@ -13,37 +15,15 @@ import { FeedbackDisplay } from './components/FeedbackDisplay';
 import { InventoryTable } from './components/InventoryTable';
 import { CameraScanner } from './components/CameraScanner';
 
-// --- AUDIO GLOBAL PRELOAD (Agar tidak delay) ---
-const audioSuccess = new Audio('https://assets.mixkit.co/active_storage/sfx/2578/2578-preview.m4a');
-const audioError = new Audio('https://assets.mixkit.co/active_storage/sfx/2572/2572-preview.m4a');
-const audioWarn = new Audio('https://assets.mixkit.co/active_storage/sfx/950/950-preview.m4a');
-
-// Set Volume
-audioSuccess.volume = 1.0;
-audioError.volume = 1.0;
-audioWarn.volume = 1.0;
-
 const App: React.FC = () => {
   const [tableData, setTableData] = useState<InventoryItem[]>([]);
   const [stats, setStats] = useState({ total: 0, scanned: 0 });
+  
   const [lastScanFeedback, setLastScanFeedback] = useState<ScanFeedback>({ status: 'IDLE', message: '' });
   const [isLoading, setIsLoading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
-
-  // Trik Unlock Audio iOS
-  const unlockAudio = () => {
-      audioSuccess.play().then(() => audioSuccess.pause()).catch(()=>{});
-      audioError.play().then(() => audioError.pause()).catch(()=>{});
-      audioWarn.play().then(() => audioWarn.pause()).catch(()=>{});
-  };
-
-  const playSound = (type: 'OK' | 'FAIL' | 'DUP') => {
-      if (type === 'OK') { audioSuccess.currentTime = 0; audioSuccess.play().catch(()=>{}); }
-      if (type === 'FAIL') { audioError.currentTime = 0; audioError.play().catch(()=>{}); }
-      if (type === 'DUP') { audioWarn.currentTime = 0; audioWarn.play().catch(()=>{}); }
-  };
 
   const refreshData = async () => {
     try {
@@ -100,29 +80,23 @@ const App: React.FC = () => {
         const item = await getItemByBarcode(searchCode);
         
         if (!item) {
-            playSound('FAIL');
+            playBeep('ERROR'); // AUDIO BARU
             setLastScanFeedback({ status: 'NOT_FOUND', message: 'TIDAK DITEMUKAN' });
         } else if (item.is_scanned) {
-            playSound('DUP');
+            playBeep('WARNING'); // AUDIO BARU
             setLastScanFeedback({ status: 'DUPLICATE', message: 'SUDAH DI SCAN', item });
         } else {
             const scannedItem = await markItemAsScanned(searchCode);
-            playSound('OK'); 
+            playBeep('SUCCESS'); // AUDIO BARU
             setLastScanFeedback({ status: 'FOUND', message: scannedItem.type || 'BERHASIL', item: scannedItem });
         }
     } catch (error) {
-        playSound('FAIL');
+        playBeep('ERROR');
         setLastScanFeedback({ status: 'NOT_FOUND', message: 'ERROR SERVER' });
     } finally {
         setIsProcessing(false);
     }
   }, [isProcessing]);
-
-  // Tombol Buka Kamera (Sekaligus Unlock Audio)
-  const openCamera = () => {
-      unlockAudio();
-      setShowCamera(true);
-  }
 
   return (
     <div className="fixed inset-0 bg-slate-50 flex flex-col font-sans overflow-hidden">
@@ -167,8 +141,8 @@ const App: React.FC = () => {
           <FeedbackDisplay feedback={lastScanFeedback} />
           <div className="bg-white p-3 rounded-xl shadow-sm border border-slate-200 flex flex-col gap-3">
              <ScannerInput onScan={handleScan} lastResult={lastScanFeedback.status} isProcessing={isProcessing} />
-             {/* Tombol Unlock Audio & Buka Kamera */}
-             <button onClick={openCamera} className="w-full py-4 bg-indigo-600 active:bg-indigo-800 text-white rounded-xl shadow-md font-bold flex justify-center gap-2 items-center text-lg animate-pulse">
+             {/* Panggil playBeep kosong saat klik untuk init AudioContext */}
+             <button onClick={() => { playBeep('SUCCESS'); setShowCamera(true); }} className="w-full py-4 bg-indigo-600 active:bg-indigo-800 text-white rounded-xl shadow-md font-bold flex justify-center gap-2 items-center text-lg animate-pulse">
                 <i className="fa-solid fa-camera text-2xl"></i> SCAN KAMERA
              </button>
           </div>
