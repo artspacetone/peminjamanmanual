@@ -14,71 +14,46 @@ import { InventoryTable } from './components/InventoryTable';
 import { CameraScanner } from './components/CameraScanner';
 
 const App: React.FC = () => {
-  // State Data
   const [tableData, setTableData] = useState<InventoryItem[]>([]);
   const [stats, setStats] = useState({ total: 0, scanned: 0 });
   
-  // State UI
   const [lastScanFeedback, setLastScanFeedback] = useState<ScanFeedback>({ status: 'IDLE', message: '' });
   const [isLoading, setIsLoading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
   const [showCamera, setShowCamera] = useState(false);
 
-  // Load Awal
+  // Fungsi Refresh Data Global
   const refreshData = async () => {
     try {
         const [statData, recentData] = await Promise.all([
             getInventoryStats(),
-            fetchRecentInventory()
+            fetchRecentInventory() // Default fetch 50 item terbaru
         ]);
         setStats(statData);
         setTableData(recentData);
-    } catch (e) { console.error("Load Error", e); }
+    } catch (e) { console.error("Sync Error", e); }
   };
 
   useEffect(() => {
     refreshData();
-    // Realtime simple: jika ada perubahan apapun, refresh stats & table
-    const channel = supabase.channel('any-change')
+    
+    // SUBSCRIPTION REALTIME (Penting untuk Multi-Device)
+    // Event '*' artinya: Insert, Update, atau Delete apapun di tabel inventory
+    // Aplikasi akan langsung refresh data.
+    const channel = supabase.channel('global-inventory-sync')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, () => {
            refreshData(); 
-      }).subscribe();
+      })
+      .subscribe();
+
     return () => { supabase.removeChannel(channel); };
   }, []);
 
-  // Handle Scan (Server Side Check)
-  const handleScan = useCallback(async (barcode: string) => {
-    if (!barcode || isProcessing) return;
-    setIsProcessing(true);
-    const searchCode = barcode.trim();
-
-    try {
-        // 1. Cek Server
-        const item = await getItemByBarcode(searchCode);
-        
-        if (!item) {
-            setLastScanFeedback({ status: 'NOT_FOUND', message: 'Nihil' });
-        } else if (item.is_scanned) {
-            setLastScanFeedback({ status: 'DUPLICATE', message: 'SUDAH SCAN', item });
-        } else {
-            // 2. Eksekusi Scan
-            const scannedItem = await markItemAsScanned(searchCode);
-            setLastScanFeedback({ status: 'FOUND', message: scannedItem.type, item: scannedItem });
-            // Stats & Table akan auto-update via Realtime useEffect di atas
-        }
-    } catch (error) {
-        setLastScanFeedback({ status: 'NOT_FOUND', message: 'Error Koneksi' });
-    } finally {
-        setIsProcessing(false);
-    }
-  }, [isProcessing]);
-
-  // Handle Upload 25k Data
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    if(!confirm("Upload Data Stok? Proses ini mungkin memakan waktu 1 menit.")) return;
+    if(!confirm("Upload Data Stok?")) return;
 
     setIsLoading(true);
     setUploadProgress(0);
@@ -86,7 +61,7 @@ const App: React.FC = () => {
     try {
       const data = await parseExcelFile(file);
       await uploadBulkInventory(data, (pct) => setUploadProgress(pct));
-      alert(`SUKSES! Data Total di Database sekarang: ${data.length + stats.total} (Estimasi)`);
+      alert(`SUKSES! Data masuk.`);
       window.location.reload();
     } catch (error: any) {
       alert(`Gagal: ${error.message}`);
@@ -97,17 +72,15 @@ const App: React.FC = () => {
     }
   };
 
-  // Handle Export (Download)
   const handleExport = async (filterType: 'ALL' | 'SCANNED' | 'PENDING') => {
     if (stats.total === 0) { alert("Data Kosong."); return; }
     
-    // UI Feedback Loading
     const btnText = document.getElementById('export-btn-text');
-    if(btnText) btnText.innerText = "Downloading...";
+    if(btnText) btnText.innerText = "Processing...";
 
     try {
         const data = await fetchAllForExport(filterType);
-        if (data.length === 0) { alert("Data tidak ditemukan untuk kategori ini."); return; }
+        if (data.length === 0) { alert("Data Nihil."); return; }
 
         const headers = ["Barcode,Item Name,Status,Color,Brand,Price,Type,Is Scanned,Scan Time"];
         const rows = data.map(i => {
@@ -120,28 +93,54 @@ const App: React.FC = () => {
         const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         const url = URL.createObjectURL(blob);
         const link = document.createElement("a"); link.href = url; 
-        link.setAttribute("download", `SO_DATA_${Date.now()}.csv`);
+        link.setAttribute("download", `SO_${filterType}_${Date.now()}.csv`);
         document.body.appendChild(link); link.click(); document.body.removeChild(link);
-
-    } catch(e) { alert("Gagal download"); }
-    finally { if(btnText) btnText.innerText = "Download"; }
+    } catch(e) { alert("Error export."); }
+    finally { if(btnText) btnText.innerText = "DOWNLOAD REPORT"; }
   };
+
+  const handleScan = useCallback(async (barcode: string) => {
+    if (!barcode || isProcessing) return;
+    setIsProcessing(true);
+    const searchCode = barcode.trim();
+
+    try {
+        const item = await getItemByBarcode(searchCode);
+        
+        if (!item) {
+            setLastScanFeedback({ status: 'NOT_FOUND', message: 'Nihil' });
+            // Mainkan suara error
+            const audio = new Audio('https://actions.google.com/sounds/v1/alarms/beep_short.ogg');
+            audio.play().catch(e=>{});
+        } else if (item.is_scanned) {
+            setLastScanFeedback({ status: 'DUPLICATE', message: 'SUDAH SCAN', item });
+            const audio = new Audio('https://actions.google.com/sounds/v1/alarms/bugle_tune.ogg'); // Nada beda
+            audio.play().catch(e=>{});
+        } else {
+            const scannedItem = await markItemAsScanned(searchCode);
+            setLastScanFeedback({ status: 'FOUND', message: scannedItem.type, item: scannedItem });
+            const audio = new Audio('https://actions.google.com/sounds/v1/science_fiction/scifi_laser.ogg'); // Nada sukses
+            audio.play().catch(e=>{});
+        }
+    } catch (error) {
+        setLastScanFeedback({ status: 'NOT_FOUND', message: 'Error Server' });
+    } finally {
+        setIsProcessing(false);
+    }
+  }, [isProcessing]);
 
   return (
     <div className="fixed inset-0 bg-slate-50 flex flex-col font-sans overflow-hidden">
-      {/* Loading Overlay */}
       {isLoading && (
           <div className="fixed inset-0 z-50 bg-black/90 flex flex-col items-center justify-center text-white p-6">
-              <h2 className="text-2xl font-bold mb-4">Sedang Mengupload...</h2>
+              <h2 className="text-2xl font-bold mb-4">Uploading...</h2>
               <div className="w-64 bg-slate-700 rounded-full h-6 overflow-hidden">
                   <div className="bg-green-500 h-full transition-all" style={{ width: `${uploadProgress}%` }}></div>
               </div>
               <p className="mt-2 font-mono">{uploadProgress}%</p>
-              <p className="mt-8 text-slate-400 text-sm animate-pulse">Mohon Jangan Tutup Browser</p>
           </div>
       )}
 
-      {/* Header */}
       <header className="bg-white shadow-sm z-30 shrink-0">
         <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -167,7 +166,6 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      {/* Content */}
       <main className="flex-1 w-full max-w-7xl mx-auto overflow-y-auto lg:overflow-hidden flex flex-col lg:flex-row gap-4 p-3 lg:p-6">
         <div className="w-full lg:w-5/12 flex flex-col shrink-0">
           <DashboardStats total={stats.total} scanned={stats.scanned} />
@@ -180,7 +178,6 @@ const App: React.FC = () => {
           </div>
         </div>
         
-        {/* Table: Hanya Menampilkan Recent Data / Search Result */}
         <div className="w-full lg:w-7/12 flex flex-col shrink-0 h-[400px] lg:h-full pb-10">
           <InventoryTable items={tableData} />
         </div>
