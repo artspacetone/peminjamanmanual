@@ -5,412 +5,721 @@ import { CameraDevice } from 'html5-qrcode/esm/camera/core';
 interface CameraScannerProps {
   onScanSuccess: (decodedText: string) => void;
   onClose: () => void;
+  onError?: (error: string) => void;
 }
 
-// --- KONFIGURASI ---
-const CONTAINER_ID = "reader-custom-view";
+// --- UTILITIES ---
+
+const isIOS = () => {
+  const ua = navigator.userAgent;
+  return /iPad|iPhone|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+};
+
+const isSafari = () => {
+  const ua = navigator.userAgent.toLowerCase();
+  return /safari/.test(ua) && !/chrome|crios/.test(ua);
+};
+
+const isIOSDevice = isIOS();
+const containerId = "reader-custom-view";
+
+// --- CONFIGURATION ---
 
 const SCANNER_CONFIG = {
-  fps: 20, // Turunkan sedikit agar iOS lebih stabil & tidak panas
+  fps: isIOSDevice ? 20 : 30, // iOS lebih stabil di FPS rendah
   qrbox: (viewfinderWidth: number, viewfinderHeight: number) => {
-    // Membuat area scan responsif (kotak di tengah)
     const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
     return {
       width: Math.floor(minEdge * 0.7),
       height: Math.floor(minEdge * 0.7),
     };
   },
-  aspectRatio: 1.0,
+  aspectRatio: 1.777778, // 16:9
   disableFlip: false,
+  rememberLastUsedCamera: true,
   supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA],
   formatsToSupport: [
+    Html5QrcodeSupportedFormats.QR_CODE,
     Html5QrcodeSupportedFormats.CODE_128,
     Html5QrcodeSupportedFormats.EAN_13,
-    Html5QrcodeSupportedFormats.QR_CODE,
     Html5QrcodeSupportedFormats.UPC_A,
     Html5QrcodeSupportedFormats.UPC_E,
     Html5QrcodeSupportedFormats.EAN_8,
     Html5QrcodeSupportedFormats.CODE_39,
+    Html5QrcodeSupportedFormats.CODE_93,
+    Html5QrcodeSupportedFormats.CODABAR,
     Html5QrcodeSupportedFormats.ITF,
     Html5QrcodeSupportedFormats.PDF_417,
   ],
 };
 
-export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onClose }) => {
+export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onClose, onError }) => {
   // --- STATE ---
   const [cameras, setCameras] = useState<CameraDevice[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('');
-  const [isScanning, setIsScanning] = useState(false);
-  const [permissionError, setPermissionError] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
   
-  // Fitur Kamera
+  // Status State
+  const [isScanning, setIsScanning] = useState(false);
+  const [isLoading, setIsLoading] = useState(true); // Default true saat init
+  const [isInitializing, setIsInitializing] = useState(true);
+  const [permissionError, setPermissionError] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+
+  // Hardware Features State
   const [hasFlash, setHasFlash] = useState(false);
   const [isFlashOn, setIsFlashOn] = useState(false);
   const [zoom, setZoom] = useState(1);
   const [zoomCap, setZoomCap] = useState<{ min: number; max: number; step: number } | null>(null);
   const [scanCount, setScanCount] = useState(0);
+  const [autoFocusEnabled, setAutoFocusEnabled] = useState(true);
 
   // Refs
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const videoTrackRef = useRef<MediaStreamTrack | null>(null);
-  const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
-  const isFirstLoad = useRef(true);
+  const isMountedRef = useRef(true);
+  const startAttemptsRef = useRef(0);
+  const scanDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  const videoElementRef = useRef<HTMLVideoElement | null>(null);
 
-  // --- LOGIKA UTAMA ---
+  // --- LIFECYCLE ---
 
-  // 1. Start Scanner (Diperbaiki untuk Loading Cepat)
-  const startScanner = useCallback(async (cameraIdOrConfig: string | MediaTrackConstraints) => {
-    // Bersihkan instance lama jika ada
-    if (scannerRef.current?.isScanning) {
-      await stopScanner();
-    }
+  useEffect(() => {
+    isMountedRef.current = true;
+    
+    // Mulai inisialisasi sistem kamera
+    initializeCameraSystem();
 
-    // Reset UI state
-    setIsLoading(true);
-    setPermissionError(false);
-    setHasFlash(false);
-    setZoomCap(null);
+    return () => {
+      isMountedRef.current = false;
+      cleanupScanner();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    // Pastikan container bersih
-    const container = document.getElementById(CONTAINER_ID);
-    if (container) container.innerHTML = '';
+  // --- INITIALIZATION & PERMISSION ---
 
+  const initializeCameraSystem = async () => {
+    if (!isMountedRef.current) return;
+    
+    setIsInitializing(true);
+    setErrorMessage('');
+    
     try {
-      const html5QrCode = new Html5Qrcode(CONTAINER_ID);
-      scannerRef.current = html5QrCode;
-
-      // Konfigurasi Start
-      // Jika string -> gunakan deviceId (user memilih dari dropdown)
-      // Jika object -> gunakan facingMode (inisialisasi awal)
-      const cameraConfig = typeof cameraIdOrConfig === 'string' 
-        ? { deviceId: { exact: cameraIdOrConfig } }
-        : cameraIdOrConfig;
-
-      await html5QrCode.start(
-        cameraConfig,
-        SCANNER_CONFIG,
-        (decodedText) => {
-          // Success Callback
-          if (navigator.vibrate) navigator.vibrate(50);
-          setScanCount((prev) => prev + 1);
-          onScanSuccess(decodedText);
-          
-          // Optional: Pause sebentar agar tidak spam scan
-           html5QrCode.pause(true);
-           setTimeout(() => html5QrCode.resume(), 1500);
-        },
-        (errorMessage) => {
-          // Ignore scanning errors usually
-        }
-      );
-
-      setIsScanning(true);
-      setIsLoading(false);
-
-      // Setelah kamera jalan, ambil Capabilities (Zoom/Flash)
-      setupCameraCapabilities();
-
-      // Jika ini load pertama, ambil daftar kamera di background
-      if (isFirstLoad.current) {
-        isFirstLoad.current = false;
-        fetchCameras();
+      // 1. Cek dukungan browser
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        throw new Error('Browser tidak mendukung akses kamera');
       }
 
-    } catch (err: any) {
-      console.error("Error starting scanner:", err);
-      setIsLoading(false);
-      // Tangani error izin
-      if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-        setPermissionError(true);
-      } else {
-        // Retry logic sederhana atau fallback
-        if (typeof cameraIdOrConfig === 'object' && (cameraIdOrConfig as any).facingMode === 'environment') {
-            // Jika gagal buka kamera belakang, coba user facing sebagai fallback terakhir
-            startScanner({ facingMode: "user" });
-        }
-      }
-    }
-  }, [onScanSuccess]);
+      // 2. Request Permission (Penting untuk iOS agar list kamera muncul)
+      await requestCameraPermission();
 
-  // 2. Ambil Daftar Kamera (Dilakukan setelah scanner jalan agar cepat)
-  const fetchCameras = async () => {
-    try {
-      const devices = await Html5Qrcode.getCameras();
-      if (devices && devices.length > 0) {
+      // 3. Ambil daftar kamera
+      const devices = await getCameraList();
+
+      if (!devices || devices.length === 0) {
+        throw new Error('Tidak ada kamera yang ditemukan');
+      }
+
+      if (isMountedRef.current) {
         setCameras(devices);
         
-        // Coba cari kamera yang sedang aktif untuk set selected value
-        const currentTrack = videoTrackRef.current;
-        if (currentTrack) {
-            const activeLabel = currentTrack.label;
-            const activeDevice = devices.find(d => d.label === activeLabel);
-            if (activeDevice) setSelectedCameraId(activeDevice.id);
-        }
+        // 4. Pilih kamera optimal
+        const optimalCameraId = selectOptimalCamera(devices);
+        setSelectedCameraId(optimalCameraId);
+
+        // 5. Mulai kamera otomatis
+        // Note: Pada iOS kadang perlu trigger manual, tapi kita coba auto start dulu
+        // dengan delay sedikit agar DOM siap
+        setTimeout(() => {
+            if (isMountedRef.current) {
+                startCamera(optimalCameraId);
+            }
+        }, 500);
       }
-    } catch (err) {
-      console.warn("Gagal mengambil list kamera (mungkin izin belum full):", err);
+
+    } catch (error: any) {
+      console.error('Initialize error:', error);
+      handleCameraError(error);
+    } finally {
+      if (isMountedRef.current) {
+        setIsInitializing(false);
+      }
     }
   };
 
-  // 3. Setup Capabilities (Flash & Zoom)
-  const setupCameraCapabilities = () => {
-    setTimeout(() => {
-      const videoElement = document.querySelector(`#${CONTAINER_ID} video`) as HTMLVideoElement;
-      if (!videoElement || !videoElement.srcObject) return;
+  const requestCameraPermission = async (): Promise<boolean> => {
+    try {
+      // Pancing permission dengan stream sementara
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: 'environment' },
+        audio: false 
+      });
+      
+      // Matikan stream segera setelah dapat izin
+      stream.getTracks().forEach(track => track.stop());
+      return true;
+    } catch (error: any) {
+      console.warn('Permission request failed:', error);
+      if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+         setErrorMessage('Izin kamera ditolak. Harap izinkan akses di pengaturan browser.');
+         setPermissionError(true);
+      }
+      return false;
+    }
+  };
 
+  const getCameraList = async (): Promise<CameraDevice[]> => {
+    try {
+      return await Html5Qrcode.getCameras();
+    } catch (error) {
+      console.warn('Get cameras error, trying fallback enumeration:', error);
+      // Fallback manual enumerateDevices
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(device => device.kind === 'videoinput');
+        return videoDevices.map((device, index) => ({
+          id: device.deviceId,
+          label: device.label || `Kamera ${index + 1}`
+        }));
+      } catch (e) {
+        return [];
+      }
+    }
+  };
+
+  const selectOptimalCamera = (devices: CameraDevice[]): string => {
+    if (!devices.length) return '';
+
+    // Coba ambil preferensi terakhir
+    const lastCameraId = localStorage.getItem('lastCameraId');
+    
+    // Logika Khusus iOS: Prioritaskan Back Camera
+    if (isIOSDevice) {
+       const backCamera = devices.find(c => 
+         c.label.toLowerCase().includes('back') || 
+         c.label.toLowerCase().includes('rear') || 
+         c.label.toLowerCase().includes('environment') ||
+         (c.label && c.label.match(/2$/)) // Back camera kadang berakhiran "2"
+       );
+       // Jika ada preferensi valid dan device ID masih ada, gunakan itu. 
+       // Jika tidak, gunakan back camera yang ditemukan.
+       if (lastCameraId && devices.some(d => d.id === lastCameraId)) return lastCameraId;
+       return backCamera?.id || devices[0].id;
+    }
+
+    // Android/Desktop
+    if (lastCameraId && devices.some(d => d.id === lastCameraId)) {
+      return lastCameraId;
+    }
+    
+    const backCamera = devices.find(c => 
+        c.label.toLowerCase().includes('back') || 
+        c.label.toLowerCase().includes('environment')
+    );
+    return backCamera?.id || devices[0].id;
+  };
+
+  // --- CORE CAMERA LOGIC ---
+
+  const getVideoConstraints = (cameraId: string) => {
+      // Base constraints
+      const baseConstraints: any = {
+          deviceId: { exact: cameraId }
+      };
+
+      if (isIOSDevice) {
+          // iOS Specific Fixes:
+          // 1. Resolusi Tinggi: Memaksa penggunaan lensa utama (Wide) yg punya autofocus
+          // 2. Aspect Ratio 16:9 agar full screen
+          return {
+              ...baseConstraints,
+              width: { min: 1280, ideal: 1920, max: 2560 }, // Resolusi tinggi = Autofocus aktif
+              height: { min: 720, ideal: 1080 },
+              facingMode: { ideal: "environment" } // Hint tambahan
+          };
+      } else {
+          // Android/Desktop Fixes:
+          // 1. Continuous Focus
+          return {
+              ...baseConstraints,
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+              focusMode: "continuous", // Sinyal standar Android
+              advanced: [{ focusMode: "continuous" }]
+          };
+      }
+  };
+
+  const startCamera = async (cameraId: string) => {
+    if (!isMountedRef.current || !cameraId) return;
+    if (isLoading && startAttemptsRef.current > 0) return; // Prevent double start
+
+    setIsLoading(true);
+    setPermissionError(false);
+    setErrorMessage('');
+    startAttemptsRef.current++;
+
+    try {
+        // Cleanup previous instance
+        await stopCamera();
+
+        const html5QrCode = new Html5Qrcode(containerId);
+        scannerRef.current = html5QrCode;
+
+        // Ambil constraints yang sudah dioptimalkan
+        const videoConstraints = getVideoConstraints(cameraId);
+        console.log('Starting with constraints:', videoConstraints);
+
+        // Start scanning
+        await html5QrCode.start(
+            videoConstraints,
+            SCANNER_CONFIG,
+            onScanSuccessHandler,
+            (errorMessage) => { 
+                // Ignore frame scanning errors
+            }
+        );
+
+        if (isMountedRef.current) {
+            setIsScanning(true);
+            setIsLoading(false);
+            
+            // Simpan preferensi
+            localStorage.setItem('lastCameraId', cameraId);
+
+            // Setup hardware features (Zoom/Flash)
+            setTimeout(() => {
+                setupCameraCapabilities();
+                setupAutoFocus(); // Trigger re-focus
+                // Set default zoom agak maju sedikit agar fokus lebih mudah
+                if (!isIOSDevice) applyZoom(1.2); 
+            }, 800);
+        }
+
+    } catch (error: any) {
+        console.error('Start camera error:', error);
+        
+        if (isMountedRef.current) {
+            // Handle error specific
+            if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
+                setPermissionError(true);
+                setErrorMessage('Akses kamera ditolak.');
+                setIsLoading(false);
+            } else {
+                // Try fallback method jika gagal start normal
+                if (startAttemptsRef.current < 2) {
+                    console.log('Attempting fallback start...');
+                    startCameraWithFallback(cameraId);
+                } else {
+                    setErrorMessage(`Gagal memulai kamera: ${error.message}`);
+                    setIsLoading(false);
+                    if (onError) onError(error.message);
+                }
+            }
+        }
+    }
+  };
+
+  const startCameraWithFallback = async (cameraId: string) => {
+      try {
+          if (!scannerRef.current) return;
+          
+          // Fallback menggunakan basic constraints tanpa resolusi tinggi
+          const basicConstraints = {
+              deviceId: { exact: cameraId },
+              facingMode: isIOSDevice ? "environment" : undefined
+          };
+
+          await scannerRef.current.start(
+              basicConstraints,
+              { ...SCANNER_CONFIG, fps: 10 }, // Turunkan FPS di fallback
+              onScanSuccessHandler,
+              () => {}
+          );
+
+          if (isMountedRef.current) {
+              setIsScanning(true);
+              setIsLoading(false);
+          }
+      } catch (fallbackError: any) {
+          console.error('Fallback failed:', fallbackError);
+          setIsLoading(false);
+          setErrorMessage('Gagal memulai kamera (Mode Fallback).');
+      }
+  };
+
+  const stopCamera = async () => {
+      if (scannerRef.current?.isScanning) {
+          try {
+              await scannerRef.current.stop();
+              scannerRef.current.clear();
+          } catch (e) { console.warn("Stop failed", e); }
+      }
+
+      // Stop stream tracks manual
+      if (videoTrackRef.current) {
+          videoTrackRef.current.stop();
+          videoTrackRef.current = null;
+      }
+      
+      if (isMountedRef.current) {
+        setIsScanning(false);
+        setIsFlashOn(false);
+      }
+  };
+
+  const cleanupScanner = () => {
+      stopCamera();
+      scannerRef.current = null;
+      const container = document.getElementById(containerId);
+      if (container) container.innerHTML = '';
+  };
+
+  // --- HARDWARE CAPABILITIES ---
+
+  const setupCameraCapabilities = () => {
+      const videoElement = document.querySelector(`#${containerId} video`) as HTMLVideoElement;
+      if (!videoElement || !videoElement.srcObject) return;
+      
+      videoElementRef.current = videoElement;
       const stream = videoElement.srcObject as MediaStream;
       const track = stream.getVideoTracks()[0];
       videoTrackRef.current = track;
 
-      // Cek Capabilities
       const capabilities = track.getCapabilities ? track.getCapabilities() : {};
       const settings = track.getSettings ? track.getSettings() : {};
 
-      // --- SETUP FLASH ---
-      // iOS modern menggunakan 'torch', browser lama 'fillLightMode'
+      // 1. Flash
       if ('torch' in capabilities || 'fillLightMode' in capabilities) {
-        setHasFlash(true);
+          setHasFlash(true);
       }
 
-      // --- SETUP ZOOM ---
+      // 2. Zoom
       if ('zoom' in capabilities) {
-        const zoomCapObj = (capabilities as any).zoom;
-        setZoomCap({
-          min: zoomCapObj.min,
-          max: zoomCapObj.max,
-          step: zoomCapObj.step || 0.1
-        });
-        
-        // Set initial zoom value
-        const currentZoom = (settings as any).zoom || zoomCapObj.min;
-        setZoom(currentZoom);
+          const zoomCaps = (capabilities as any).zoom;
+          setZoomCap({
+              min: zoomCaps.min || 1,
+              max: Math.min(zoomCaps.max || 5, 5),
+              step: zoomCaps.step || 0.1
+          });
+          const currentZoom = (settings as any).zoom || zoomCaps.min;
+          setZoom(currentZoom);
       }
-    }, 1000); // Beri jeda agar hardware siap
+
+      // 3. Setup Manual Tap Focus Listener
+      if (isIOSDevice || 'ontouchstart' in window) {
+          setupTapToFocus(videoElement);
+      }
   };
 
-  // 4. Handle Zoom Change
-  const handleZoom = async (val: number) => {
-    setZoom(val);
-    if (videoTrackRef.current) {
+  const setupAutoFocus = () => {
+      if (!videoTrackRef.current) return;
+      // Coba paksa mode continuous
       try {
-        await videoTrackRef.current.applyConstraints({
-          advanced: [{ zoom: val } as any]
-        });
+          videoTrackRef.current.applyConstraints({
+              advanced: [{ focusMode: 'continuous' } as any]
+          });
+          setAutoFocusEnabled(true);
       } catch (e) {
-        console.error("Gagal zoom:", e);
+          console.log("Continuous focus constraint rejected (normal on some iOS)");
       }
-    }
   };
 
-  // 5. Handle Flash Toggle
-  const toggleFlash = async () => {
-    if (!videoTrackRef.current) return;
-    try {
-      const track = videoTrackRef.current;
-      const targetStatus = !isFlashOn;
+  const setupTapToFocus = (videoElement: HTMLVideoElement) => {
+      // Menambahkan event listener ke container untuk tap to focus visual
+      const container = document.getElementById(containerId);
+      if (!container) return;
+
+      const handleTap = (e: any) => {
+          if (!videoTrackRef.current) return;
+          
+          const rect = container.getBoundingClientRect();
+          const x = e.touches ? e.touches[0].clientX : e.clientX;
+          const y = e.touches ? e.touches[0].clientY : e.clientY;
+          
+          // Visual Indicator
+          showFocusIndicator(x - rect.left, y - rect.top);
+
+          // Logic re-trigger focus
+          // Pada web, kita tidak bisa kirim koordinat (X,Y) ke hardware kamera secara standar API.
+          // Tapi, re-applying constraint seringkali memicu kamera untuk mencari fokus ulang (re-metering).
+          setupAutoFocus();
+      };
+
+      container.addEventListener('touchstart', handleTap);
+      container.addEventListener('click', handleTap);
       
-      // Coba standar modern (Torch)
-      await track.applyConstraints({
-        advanced: [{ torch: targetStatus } as any]
-      });
-      setIsFlashOn(targetStatus);
-    } catch (e) {
-      // Fallback untuk device lama/tertentu
-      console.warn("Torch standard gagal, mencoba metode alternatif...");
+      // Simpan referensi cleanup di state atau ref jika perlu, 
+      // tapi karena component unmount membersihkan container, ini aman.
+  };
+
+  const showFocusIndicator = (x: number, y: number) => {
+      const container = document.getElementById(containerId);
+      if (!container) return;
+      
+      const indicator = document.createElement('div');
+      indicator.className = 'absolute w-16 h-16 border-2 border-yellow-400 rounded-full animate-ping pointer-events-none z-50';
+      indicator.style.left = `${x - 32}px`;
+      indicator.style.top = `${y - 32}px`;
+      
+      container.appendChild(indicator);
+      setTimeout(() => indicator.remove(), 1000);
+  };
+
+  // --- ACTIONS ---
+
+  const onScanSuccessHandler = (decodedText: string) => {
+      if (scanDebounceRef.current) return;
+      
+      // Debounce logic
+      scanDebounceRef.current = setTimeout(() => {
+          scanDebounceRef.current = null;
+      }, 1500);
+
+      if (navigator.vibrate) navigator.vibrate(50);
+      playScanSound();
+      
+      setScanCount(prev => prev + 1);
+      onScanSuccess(decodedText);
+  };
+
+  const playScanSound = () => {
       try {
-         await videoTrackRef.current?.applyConstraints({
-            advanced: [{ fillLightMode: !isFlashOn ? "flash" : "off" } as any]
-         });
-         setIsFlashOn(!isFlashOn);
-      } catch (e2) {
-          console.error("Flash tidak didukung hardware/browser ini", e2);
-      }
-    }
+          const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+          if (AudioContext) {
+              const ctx = new AudioContext();
+              const osc = ctx.createOscillator();
+              const gain = ctx.createGain();
+              osc.connect(gain);
+              gain.connect(ctx.destination);
+              osc.frequency.value = 800;
+              gain.gain.value = 0.1;
+              osc.start();
+              setTimeout(() => { osc.stop(); ctx.close(); }, 100);
+          }
+      } catch (e) {}
   };
 
-  // 6. Stop Scanner
-  const stopScanner = async () => {
-    if (scannerRef.current?.isScanning) {
-        try {
-            await scannerRef.current.stop();
-            scannerRef.current.clear();
-        } catch (e) {
-            console.error("Stop error", e);
-        }
-    }
-    setIsScanning(false);
-    setIsFlashOn(false);
-  };
-
-  // 7. Ganti Kamera via Dropdown
   const handleCameraChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const newId = e.target.value;
-    setSelectedCameraId(newId);
-    startScanner(newId); // Restart dengan ID spesifik
+      const newId = e.target.value;
+      setSelectedCameraId(newId);
+      startCamera(newId);
   };
 
-  // --- LIFECYCLE ---
-  useEffect(() => {
-    // Saat mount, langsung start dengan mode environment (belakang)
-    // Ini memperbaiki masalah "Loading lama" dan "Hanya kamera depan di iOS"
-    // karena kita memaksa request 'environment' di awal.
-    startScanner({ facingMode: "environment" });
+  const toggleFlash = async () => {
+      if (!videoTrackRef.current) return;
+      const target = !isFlashOn;
+      try {
+          await videoTrackRef.current.applyConstraints({
+              advanced: [{ torch: target } as any]
+          });
+          setIsFlashOn(target);
+      } catch (e) {
+          // Fallback iOS legacy
+          try {
+             await videoTrackRef.current.applyConstraints({
+                 advanced: [{ fillLightMode: target ? "flash" : "off" } as any]
+             });
+             setIsFlashOn(target);
+          } catch (e2) {}
+      }
+  };
 
-    return () => {
-      // Cleanup saat unmount
-      stopScanner();
-    };
-    // eslint-disable-next-line
-  }, []);
+  const applyZoom = async (value: number) => {
+      setZoom(value);
+      if (videoTrackRef.current) {
+          try {
+              await videoTrackRef.current.applyConstraints({
+                  advanced: [{ zoom: value } as any]
+              });
+          } catch(e) {}
+      }
+  };
 
-  // --- RENDER ---
+  const handleManualStart = () => {
+      if (selectedCameraId) {
+          startCamera(selectedCameraId);
+      } else if (cameras.length > 0) {
+          startCamera(cameras[0].id);
+      } else {
+          initializeCameraSystem();
+      }
+  };
+
+  const handleCameraError = (error: any) => {
+      let msg = 'Gagal mengakses kamera.';
+      if (error.name === 'NotAllowedError') {
+          msg = 'Izin kamera ditolak.';
+          setPermissionError(true);
+      } else if (error.name === 'NotFoundError') {
+          msg = 'Kamera tidak ditemukan.';
+      }
+      setErrorMessage(msg);
+      setIsLoading(false);
+  };
+
+  // --- RENDER HELPERS ---
+
+  const renderLoading = () => (
+      <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900 z-50">
+          <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
+          <p className="text-gray-300">Menyiapkan Kamera...</p>
+          {startAttemptsRef.current > 1 && <p className="text-xs text-gray-500 mt-2">Mencoba metode alternatif...</p>}
+      </div>
+  );
+
+  const renderError = () => (
+      <div className="absolute inset-0 flex flex-col items-center justify-center bg-gray-900 p-6 z-50 text-center">
+          <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mb-4">
+             <i className="fa-solid fa-triangle-exclamation text-red-500 text-2xl"></i>
+          </div>
+          <h3 className="text-xl font-bold mb-2 text-white">Gagal Memulai</h3>
+          <p className="text-gray-400 mb-6">{errorMessage}</p>
+          <div className="flex gap-3 w-full max-w-xs">
+              <button onClick={handleManualStart} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg">
+                 Coba Lagi
+              </button>
+              <button onClick={() => window.location.reload()} className="flex-1 bg-gray-700 hover:bg-gray-600 text-white py-3 rounded-lg">
+                 Reload
+              </button>
+          </div>
+      </div>
+  );
+
   return (
-    <div className="fixed inset-0 z-[9999] flex flex-col bg-black">
-      {/* Header / Top Bar */}
-      <div className="bg-slate-900 px-4 py-3 flex justify-between items-center z-20 shadow-lg border-b border-slate-700">
-        <button 
-            onClick={onClose} 
-            className="w-10 h-10 rounded-full bg-slate-800 text-white flex items-center justify-center hover:bg-slate-700 transition"
-        >
+    <div className="fixed inset-0 z-[9999] flex flex-col bg-black text-white">
+      {/* HEADER */}
+      <div className="flex justify-between items-center p-4 bg-gray-900 border-b border-gray-800 z-20 shadow-lg">
+        <button onClick={onClose} className="w-10 h-10 flex items-center justify-center rounded-full bg-gray-800 hover:bg-gray-700 transition">
           <i className="fa-solid fa-arrow-left"></i>
         </button>
-        
+
         <div className="text-center">
-            <h3 className="text-white font-bold text-sm">QR Code Scanner</h3>
-            <span className="text-xs text-slate-400">
-                {isScanning ? 'Kamera Aktif' : 'Memuat...'}
-            </span>
+            <h1 className="font-bold text-lg">QR Scanner Pro</h1>
+            <div className="text-xs text-gray-400 flex items-center justify-center gap-1">
+                {isScanning ? <span className="text-green-400">● Kamera Aktif</span> : 'Standby'}
+            </div>
         </div>
 
-        {/* Flash Toggle Button */}
         <button 
-            onClick={toggleFlash}
-            disabled={!hasFlash || !isScanning}
-            className={`w-10 h-10 rounded-full flex items-center justify-center transition ${
-                !hasFlash ? 'opacity-0 pointer-events-none' : 
-                isFlashOn ? 'bg-yellow-500 text-black shadow-[0_0_15px_rgba(234,179,8,0.5)]' : 'bg-slate-800 text-white'
-            }`}
+          onClick={toggleFlash}
+          disabled={!hasFlash || !isScanning}
+          className={`w-10 h-10 flex items-center justify-center rounded-full transition ${
+            isFlashOn ? 'bg-yellow-500 text-black shadow-[0_0_15px_rgba(234,179,8,0.5)]' : 'bg-gray-800 text-white'
+          } ${!hasFlash ? 'opacity-30 cursor-not-allowed' : ''}`}
         >
-            <i className={`fa-solid ${isFlashOn ? 'fa-bolt' : 'fa-bolt-lightning'}`}></i>
+          <i className={`fa-solid ${isFlashOn ? 'fa-bolt' : 'fa-bolt-lightning'}`}></i>
         </button>
       </div>
 
-      {/* Main Viewport */}
+      {/* VIEWPORT */}
       <div className="relative flex-1 bg-black overflow-hidden flex items-center justify-center">
-        {/* Scanner Container (Library renders here) */}
-        <div id={CONTAINER_ID} className="w-full h-full object-cover"></div>
+        <div id={containerId} className="w-full h-full object-cover"></div>
 
-        {/* Overlay Custom UI */}
+        {/* Scan Overlay */}
         {isScanning && !isLoading && (
-            <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                {/* Border Scan Area */}
-                <div className="relative w-[280px] h-[280px] md:w-[350px] md:h-[350px] border-2 border-transparent">
-                    {/* Sudut-sudut */}
-                    <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-blue-500 rounded-tl-lg"></div>
-                    <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-blue-500 rounded-tr-lg"></div>
-                    <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-blue-500 rounded-bl-lg"></div>
-                    <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-blue-500 rounded-br-lg"></div>
-                    
-                    {/* Scan Line Animation */}
-                    <div className="absolute top-0 left-0 w-full h-[2px] bg-blue-400 shadow-[0_0_10px_#60a5fa] animate-scan-line"></div>
+            <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-20">
+                <div className="relative w-72 h-72">
+                    {/* Corners */}
+                    <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-blue-500 rounded-tl-xl"></div>
+                    <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-blue-500 rounded-tr-xl"></div>
+                    <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-blue-500 rounded-bl-xl"></div>
+                    <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-blue-500 rounded-br-xl"></div>
+                    {/* Scan Line */}
+                    <div className="absolute top-0 left-0 w-full h-1 bg-blue-400 shadow-[0_0_20px_#3b82f6] animate-scan-down"></div>
+                    {/* Text Hint */}
+                    <div className="absolute -bottom-16 left-0 right-0 text-center">
+                        <span className="bg-black/60 backdrop-blur px-4 py-2 rounded-full text-sm text-white border border-white/10">
+                            Arahkan kamera ke QR Code
+                        </span>
+                        {isIOSDevice && <div className="text-xs text-gray-400 mt-2">Tap layar untuk fokus manual</div>}
+                    </div>
                 </div>
             </div>
         )}
 
-        {/* Loading Spinner */}
-        {isLoading && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/80 z-30">
-                <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-                <p className="text-white text-sm">Menyiapkan Kamera...</p>
-            </div>
-        )}
-
-        {/* Permission Error Message */}
-        {permissionError && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900 p-6 z-40 text-center">
-                <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mb-4">
-                    <i className="fa-solid fa-camera-slash text-red-500 text-2xl"></i>
-                </div>
-                <h3 className="text-white font-bold text-lg mb-2">Akses Kamera Ditolak</h3>
-                <p className="text-slate-400 text-sm mb-6 max-w-xs">
-                    Browser memblokir akses kamera. 
-                    {isIOS ? ' Pada iPhone, silakan buka Pengaturan > Safari > Kamera > Izinkan.' : ' Silakan izinkan akses kamera pada address bar browser.'}
-                </p>
-                <button 
-                    onClick={() => window.location.reload()}
-                    className="bg-blue-600 hover:bg-blue-700 text-white py-2 px-6 rounded-lg font-medium transition"
-                >
-                    Coba Lagi / Refresh
-                </button>
-            </div>
+        {/* States */}
+        {isLoading && renderLoading()}
+        {errorMessage && !isLoading && renderError()}
+        {permissionError && !isLoading && renderError()}
+        
+        {/* Manual Start Button (if needed) */}
+        {!isScanning && !isLoading && !errorMessage && (
+             <div className="absolute inset-0 flex items-center justify-center z-30 bg-black/80">
+                 <button onClick={handleManualStart} className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-4 rounded-xl font-bold text-lg flex items-center gap-3">
+                     <i className="fa-solid fa-power-off"></i> Mulai Kamera
+                 </button>
+             </div>
         )}
       </div>
 
-      {/* Bottom Controls */}
-      <div className="bg-slate-900 p-4 border-t border-slate-700 pb-8 safe-area-bottom">
-        
-        {/* Zoom Control (Only show if supported) */}
+      {/* FOOTER CONTROLS */}
+      <div className="bg-gray-900 p-4 pb-8 border-t border-gray-800 z-20 safe-area-bottom">
+        {/* Zoom Slider */}
         {zoomCap && (
-            <div className="mb-4 flex items-center gap-3 px-2">
-                <i className="fa-solid fa-minus text-slate-400 text-xs"></i>
+            <div className="mb-5 flex items-center gap-3 px-2">
+                <i className="fa-solid fa-minus text-gray-500 text-xs"></i>
                 <input 
-                    type="range" 
-                    min={zoomCap.min} 
-                    max={zoomCap.max} 
+                    type="range"
+                    min={zoomCap.min}
+                    max={zoomCap.max}
                     step={zoomCap.step}
                     value={zoom}
-                    onChange={(e) => handleZoom(parseFloat(e.target.value))}
-                    className="flex-1 h-1 bg-slate-700 rounded-lg appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-4 [&::-webkit-slider-thumb]:h-4 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-blue-500"
+                    onChange={(e) => applyZoom(parseFloat(e.target.value))}
+                    className="flex-1 h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
                 />
-                <i className="fa-solid fa-plus text-slate-400 text-xs"></i>
+                <i className="fa-solid fa-plus text-gray-500 text-xs"></i>
             </div>
         )}
 
-        {/* Camera Selector & Count */}
         <div className="flex gap-3">
+             {/* Camera Selector */}
              <div className="relative flex-1">
-                <select 
+                 <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none">
+                    <i className="fa-solid fa-camera"></i>
+                 </div>
+                 <select 
                     value={selectedCameraId}
                     onChange={handleCameraChange}
                     disabled={cameras.length === 0}
-                    className="w-full bg-slate-800 text-white text-sm py-3 px-4 rounded-xl border border-slate-700 appearance-none focus:outline-none focus:border-blue-500"
-                >
+                    className="w-full bg-gray-800 text-white text-sm py-3.5 pl-10 pr-8 rounded-xl border border-gray-700 appearance-none focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                 >
                     <option value="" disabled>
-                        {cameras.length === 0 ? "Mencari kamera..." : "Pilih Kamera"}
+                        {cameras.length === 0 ? "Mencari kamera..." : "Ganti Kamera"}
                     </option>
                     {cameras.map((cam, idx) => (
                         <option key={cam.id} value={cam.id}>
                             {cam.label || `Kamera ${idx + 1}`}
                         </option>
                     ))}
-                </select>
-                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                 </select>
+                 <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
                     <i className="fa-solid fa-chevron-down text-xs"></i>
-                </div>
+                 </div>
              </div>
 
-             <div className="bg-slate-800 border border-slate-700 rounded-xl px-4 flex items-center justify-center min-w-[80px]">
-                <span className="text-blue-400 font-bold mr-2">{scanCount}</span>
-                <i className="fa-solid fa-qrcode text-slate-500 text-xs"></i>
+             {/* Scan Counter */}
+             <div className="bg-gray-800 border border-gray-700 rounded-xl px-4 flex flex-col items-center justify-center min-w-[70px]">
+                 <span className="text-xs text-gray-400">Scan</span>
+                 <span className="text-blue-400 font-bold text-lg leading-none">{scanCount}</span>
              </div>
         </div>
       </div>
+      
+      <style>{`
+        @keyframes scan-down {
+            0% { top: 0; opacity: 0; }
+            10% { opacity: 1; }
+            90% { opacity: 1; }
+            100% { top: 100%; opacity: 0; }
+        }
+        .animate-scan-down {
+            animation: scan-down 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+        }
+        .safe-area-bottom {
+            padding-bottom: env(safe-area-inset-bottom, 20px);
+        }
+      `}</style>
     </div>
   );
 };
-
-// Tambahkan style untuk animasi baris scan
-const style = document.createElement('style');
-style.textContent = `
-  @keyframes scan-line {
-    0% { top: 0; opacity: 0; }
-    10% { opacity: 1; }
-    90% { opacity: 1; }
-    100% { top: 100%; opacity: 0; }
-  }
-  .animate-scan-line {
-    animation: scan-line 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-  }
-`;
-document.head.appendChild(style);
