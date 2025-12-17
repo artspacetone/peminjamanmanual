@@ -6,367 +6,260 @@ interface CameraScannerProps {
   onClose: () => void;
 }
 
-// Helper function to detect iOS devices
-const isIOS = () => {
-  return /iPad|iPhone|iPod/.test(navigator.userAgent) || 
-         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-};
-
 export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onClose }) => {
   // State
   const [cameras, setCameras] = useState<any[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('');
-  const [cameraLabel, setCameraLabel] = useState<string>('Memuat kamera...');
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [isStarted, setIsStarted] = useState<boolean>(false); // Default false untuk kontrol lebih baik
-  const [qrDims, setQrDims] = useState<{ width: number; height: number }>({ width: 300, height: 150 });
+  const [permissionGranted, setPermissionGranted] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string>('');
   
-  // Controls State
-  const [torchOn, setTorchOn] = useState<boolean>(false);
-  const [canTorch, setCanTorch] = useState<boolean>(false);
+  // Controls
   const [zoom, setZoom] = useState<number>(1);
   const [zoomCap, setZoomCap] = useState<{ min: number; max: number; step: number } | null>(null);
+  const [torchOn, setTorchOn] = useState(false);
+  const [canTorch, setCanTorch] = useState(false);
+  const [boxSize, setBoxSize] = useState({ width: 250, height: 250 });
 
   // Refs
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const containerId = "reader-custom-view";
-  const hasReportedRef = useRef<boolean>(false);
-  const trackRef = useRef<MediaStreamTrack | null>(null);
+  const isMounted = useRef(true);
 
-  // 1. Hitung Dimensi Box Scanner
-  const computeQrDims = () => {
-    const vw = Math.min(window.innerWidth || 360, 640);
-    const isPortrait = (window.innerHeight || 0) >= (window.innerWidth || 0);
-    // Lebih lebar agar barcode panjang masuk
-    const width = Math.min(vw * 0.85, 400); 
-    const height = Math.floor(width * 0.6); 
-    return { width, height };
-  };
-
-  // 2. Handle Zoom & Torch Capability
-  const checkCapabilities = (track: MediaStreamTrack) => {
-    trackRef.current = track;
-    const caps: any = track.getCapabilities ? track.getCapabilities() : {};
-    
-    // Cek Torch
-    if (caps.torch) {
-      setCanTorch(true);
-    } else {
-      setCanTorch(false);
-    }
-
-    // Cek Zoom
-    if (caps.zoom) {
-      setZoomCap({
-        min: caps.zoom.min || 1,
-        max: caps.zoom.max || 5, // Batasi max zoom agar tidak pecah
-        step: caps.zoom.step || 0.1
-      });
-      // Set default zoom agak maju sedikit (1.2x) untuk bantu fokus
-      const initialZoom = Math.min(caps.zoom.max, 1.2);
-      applyZoom(initialZoom, track);
-    } else {
-      setZoomCap(null);
-    }
-  };
-
-  const applyTorch = async (on: boolean) => {
-    const track: any = trackRef.current;
-    if (track && canTorch) {
-      try {
-        await track.applyConstraints({ advanced: [{ torch: on }] });
-        setTorchOn(on);
-      } catch (err) {
-        console.warn("Torch error", err);
-      }
-    }
-  };
-
-  const applyZoom = async (value: number, trackParam?: MediaStreamTrack) => {
-    const track: any = trackParam || trackRef.current;
-    if (track && zoomCap) {
-      try {
-        await track.applyConstraints({ advanced: [{ zoom: value }] });
-        setZoom(value);
-      } catch (err) {
-        console.warn("Zoom error", err);
-      }
-    }
-  };
-
-  // 3. Styling Video Element agar Fullscreen & Proper
-  const tuneVideoElement = () => {
-    const container = document.getElementById(containerId);
-    const video = container?.querySelector('video') as HTMLVideoElement | null;
-    if (video) {
-      video.style.objectFit = 'cover';
-      video.style.width = '100%';
-      video.style.height = '100%';
-    }
-  };
-
-  // 4. Init Perangkat & Kamera
+  // 1. Cek HTTPS & Responsive Box
   useEffect(() => {
-    const update = () => setQrDims(computeQrDims());
-    update();
-    window.addEventListener('resize', update);
-    
-    const initCamera = async () => {
-      try {
-        setIsLoading(true);
-        // Minta izin dulu
-        await Html5Qrcode.getCameras(); 
-        const devices = await Html5Qrcode.getCameras();
-        
-        if (devices && devices.length) {
-          setCameras(devices);
-          
-          // Logika Pemilihan Kamera yang Lebih Pintar
-          let bestId = devices[0].id;
-          const savedId = localStorage.getItem('scanner.cameraId');
+    isMounted.current = true;
 
-          // Cari kamera belakang (environment)
-          const backCameras = devices.filter(d => 
-            d.label.toLowerCase().includes('back') || 
-            d.label.toLowerCase().includes('belakang') ||
-            d.label.toLowerCase().includes('rear') ||
-            d.label.toLowerCase().includes('environment')
-          );
+    // Cek Secure Context (Wajib HTTPS kecuali localhost)
+    if (window.location.hostname !== 'localhost' && window.location.protocol !== 'https:') {
+        setErrorMsg("Kamera wajib menggunakan HTTPS atau localhost.");
+    }
 
-          if (savedId && devices.find(d => d.id === savedId)) {
-            bestId = savedId;
-          } else if (backCameras.length > 0) {
-            // Pada HP multi-kamera, kamera utama biasanya adalah back camera terakhir atau pertama tergantung brand.
-            // Kita ambil yang terakhir karena seringkali index 0 itu wide/fisheye pada beberapa array.
-            // Namun, paling aman biarkan user memilih, kita set default ke salah satu back.
-            bestId = backCameras[backCameras.length - 1].id;
-          }
-
-          const selectedCam = devices.find(d => d.id === bestId) || devices[0];
-          setSelectedCameraId(selectedCam.id);
-          setCameraLabel(selectedCam.label);
-          setIsStarted(true); // Auto start setelah dapat kamera
-        } else {
-          alert("Tidak ada kamera ditemukan.");
-        }
-      } catch (err) {
-        console.error("Permission error", err);
-        alert("Izin kamera diperlukan.");
-      } finally {
-        setIsLoading(false);
-      }
+    const handleResize = () => {
+        const size = Math.min(window.innerWidth * 0.8, 300);
+        setBoxSize({ width: size, height: Math.floor(size * 0.6) }); // Kotak landscape
     };
+    handleResize();
+    window.addEventListener('resize', handleResize);
 
-    initCamera();
+    // Auto start permission request
+    requestCameraPermission();
+
     return () => { 
-        if(scannerRef.current) {
-            scannerRef.current.stop().catch(err => console.error(err));
-        }
-        window.removeEventListener('resize', update);
+        isMounted.current = false;
+        window.removeEventListener('resize', handleResize);
+        cleanupScanner();
     };
   }, []);
 
-  // 5. Fungsi Utama Start Scanner
-  const startScanner = async (cameraId: string) => {
-    if (!cameraId) return;
-    
-    // Stop dulu jika ada yang jalan
-    if (scannerRef.current && scannerRef.current.isScanning) {
-        await scannerRef.current.stop();
+  // 2. Cleanup Function yang Kuat
+  const cleanupScanner = async () => {
+    if (scannerRef.current) {
+        try {
+            if (scannerRef.current.isScanning) {
+                await scannerRef.current.stop();
+            }
+            scannerRef.current.clear();
+        } catch (e) {
+            console.warn("Cleanup warning:", e);
+        }
+        scannerRef.current = null;
     }
+  };
+
+  // 3. Request Permission & Get Cameras
+  const requestCameraPermission = async () => {
+    setErrorMsg('');
+    try {
+        // Pancing izin dengan getCameras
+        const devices = await Html5Qrcode.getCameras();
+        
+        if (!isMounted.current) return;
+
+        if (devices && devices.length) {
+            setCameras(devices);
+            setPermissionGranted(true);
+
+            // Pilih kamera belakang (environment)
+            const backCams = devices.filter(d => 
+                d.label.toLowerCase().includes('back') || 
+                d.label.toLowerCase().includes('belakang') ||
+                d.label.toLowerCase().includes('environment')
+            );
+            
+            // Ambil kamera belakang terakhir (biasanya kamera utama)
+            const bestCam = backCams.length > 0 ? backCams[backCams.length - 1] : devices[0];
+            setSelectedCameraId(bestCam.id);
+        } else {
+            setErrorMsg("Kamera tidak ditemukan di perangkat ini.");
+        }
+    } catch (err: any) {
+        console.error(err);
+        if(err.name === 'NotAllowedError') {
+            setErrorMsg("Akses kamera ditolak. Mohon izinkan akses di pengaturan browser.");
+        } else {
+            setErrorMsg("Gagal mengakses kamera. Pastikan tidak sedang dipakai aplikasi lain.");
+        }
+    }
+  };
+
+  // 4. Start Scanner Logic
+  const startScanner = async (cameraId: string) => {
+    await cleanupScanner(); // Stop yang lama dulu
     
-    hasReportedRef.current = false;
+    if (!isMounted.current) return;
+
     const html5QrCode = new Html5Qrcode(containerId);
     scannerRef.current = html5QrCode;
 
-    // Config untuk performa & fokus
-    const config = {
-      fps: 15, // FPS stabil, tidak perlu terlalu tinggi agar prosesor fokus ke autofocus
-      qrbox: qrDims,
-      aspectRatio: 1.0, // Default 1.0 agar tidak stretch
-      disableFlip: false, // Kadang perlu false untuk kamera depan, tapi kita lock environment
-      formatsToSupport: [
-        Html5QrcodeSupportedFormats.CODE_128,
-        Html5QrcodeSupportedFormats.EAN_13,
-        Html5QrcodeSupportedFormats.CODE_39,
-        Html5QrcodeSupportedFormats.QR_CODE
-      ],
-      experimentalFeatures: { useBarCodeDetectorIfSupported: true }
-    };
-
-    // Constraints Kamera (Kunci perbaikan fokus)
     const constraints = {
         deviceId: { exact: cameraId },
-        // Resolusi Ideal (720p). 4K seringkali membuat autofocus lambat di browser.
-        width: { min: 640, ideal: 1280, max: 1920 },
+        width: { min: 640, ideal: 1280, max: 1920 }, // 720p Ideal
         height: { min: 480, ideal: 720, max: 1080 },
-        // Paksa continuous focus jika didukung browser
-        advanced: [{ focusMode: "continuous" }] 
+        advanced: [{ focusMode: "continuous" }]
     };
 
     try {
-      await html5QrCode.start(
-        constraints, 
-        config,
-        (decodedText) => {
-          if (hasReportedRef.current) return;
-          hasReportedRef.current = true;
-          if (navigator.vibrate) navigator.vibrate(200);
-          onScanSuccess(decodedText);
-          stopScanner();
-        },
-        (errorMessage) => {
-          // Ignore parse errors, scanning is ongoing
-        }
-      );
+        await html5QrCode.start(
+            constraints,
+            {
+                fps: 15,
+                qrbox: boxSize,
+                aspectRatio: 1.0,
+                disableFlip: false,
+                formatsToSupport: [ 
+                  Html5QrcodeSupportedFormats.CODE_128, 
+                  Html5QrcodeSupportedFormats.EAN_13,
+                  Html5QrcodeSupportedFormats.QR_CODE 
+                ]
+            },
+            (decodedText) => {
+                if(navigator.vibrate) navigator.vibrate(200);
+                onScanSuccess(decodedText);
+                onClose(); // Tutup modal setelah scan
+            },
+            () => {} // Ignore errors per frame
+        );
 
-      // Setelah start sukses, ambil track untuk setup Torch & Zoom
-      const videoEl = document.querySelector(`#${containerId} video`) as HTMLVideoElement;
-      if (videoEl && videoEl.srcObject) {
-         const stream = videoEl.srcObject as MediaStream;
-         const track = stream.getVideoTracks()[0];
-         if (track) checkCapabilities(track);
-      }
-      
-      setTimeout(tuneVideoElement, 100);
+        // Setup Capabilities (Zoom/Torch)
+        setupCapabilities();
 
     } catch (err) {
-      console.error("Start failed", err);
-      alert("Gagal memulai kamera. Coba pilih kamera lain atau refresh.");
+        console.error("Start fail:", err);
+        // Retry logic for older devices
+        try {
+            await html5QrCode.start(cameraId, { fps: 10, qrbox: 200 }, (t)=>onScanSuccess(t), ()=>{});
+        } catch(e) {
+            setErrorMsg("Kamera gagal dimulai. Silakan refresh.");
+        }
     }
   };
 
-  const stopScanner = async () => {
-    if (scannerRef.current) {
-      try {
-        await scannerRef.current.stop();
-        scannerRef.current.clear();
-      } catch (e) {
-        console.warn(e);
-      }
-    }
+  const setupCapabilities = () => {
+     const video = document.querySelector(`#${containerId} video`) as HTMLVideoElement;
+     if (video && video.srcObject) {
+         video.style.objectFit = "cover"; // Fix tampilan gepeng
+         const stream = video.srcObject as MediaStream;
+         const track = stream.getVideoTracks()[0];
+         const caps: any = track.getCapabilities ? track.getCapabilities() : {};
+
+         setCanTorch(!!caps.torch);
+         
+         if (caps.zoom) {
+            setZoomCap({ min: caps.zoom.min || 1, max: Math.min(caps.zoom.max || 5, 5), step: caps.zoom.step || 0.1 });
+            // Apply initial zoom
+            track.applyConstraints({ advanced: [{ zoom: 1.2 }] }).catch(()=>{});
+         }
+     }
   };
 
-  // Trigger start saat ID kamera berubah & status started true
+  // Trigger Start saat ID berubah
   useEffect(() => {
-    if (isStarted && selectedCameraId) {
-      startScanner(selectedCameraId);
-    }
-  }, [selectedCameraId, isStarted]);
+     if (selectedCameraId && permissionGranted) {
+         startScanner(selectedCameraId);
+     }
+  }, [selectedCameraId, permissionGranted]);
+
+  // Handle Zoom & Torch
+  const handleZoom = (val: number) => {
+      setZoom(val);
+      const video = document.querySelector(`#${containerId} video`) as HTMLVideoElement;
+      const track = (video?.srcObject as MediaStream)?.getVideoTracks()[0];
+      if (track) track.applyConstraints({ advanced: [{ zoom: val }] }).catch(()=>{});
+  };
+
+  const handleTorch = () => {
+      const newStatus = !torchOn;
+      setTorchOn(newStatus);
+      const video = document.querySelector(`#${containerId} video`) as HTMLVideoElement;
+      const track = (video?.srcObject as MediaStream)?.getVideoTracks()[0];
+      if (track) track.applyConstraints({ advanced: [{ torch: newStatus }] }).catch(()=>{});
+  };
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black">
-      <div className="w-full h-full max-w-md bg-slate-900 flex flex-col relative">
-        
-        {/* Header */}
-        <div className="h-14 px-4 bg-slate-800 flex justify-between items-center shadow-lg z-20">
-          <h3 className="text-white font-bold text-lg flex items-center gap-2">
-            <span className="text-blue-400">Scan</span> Barcode
-          </h3>
-          <button onClick={onClose} className="w-8 h-8 rounded-full bg-slate-700 text-white flex items-center justify-center hover:bg-slate-600 transition">
-             ✕
-          </button>
-        </div>
+    <div className="fixed inset-0 z-50 flex flex-col bg-black">
+      {/* Header */}
+      <div className="bg-slate-900 p-4 flex justify-between items-center shadow-md z-20">
+         <h3 className="text-white font-bold flex items-center gap-2">
+            <i className="fa-solid fa-camera text-blue-500"></i> Scanner
+         </h3>
+         <button onClick={onClose} className="w-10 h-10 bg-slate-800 text-white rounded-full flex items-center justify-center">
+            <i className="fa-solid fa-xmark"></i>
+         </button>
+      </div>
 
-        {/* Viewport Scanner */}
-        <div className="flex-1 relative bg-black overflow-hidden flex items-center justify-center">
-            <div id="reader-custom-view" className="w-full h-full"></div>
+      {/* Main View */}
+      <div className="flex-1 relative bg-black flex items-center justify-center overflow-hidden">
+          <div id="reader-custom-view" className="w-full h-full bg-black"></div>
 
-            {/* Overlay UI */}
-            <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-10">
-                
-                {/* Kotak Scanner */}
-                <div 
-                    style={{ width: qrDims.width, height: qrDims.height }}
-                    className="relative border-2 border-transparent shadow-[0_0_0_9999px_rgba(0,0,0,0.6)]"
-                >
-                    {/* Sudut-sudut */}
-                    <div className="absolute top-0 left-0 w-8 h-8 border-t-4 border-l-4 border-green-500 rounded-tl-lg"></div>
-                    <div className="absolute top-0 right-0 w-8 h-8 border-t-4 border-r-4 border-green-500 rounded-tr-lg"></div>
-                    <div className="absolute bottom-0 left-0 w-8 h-8 border-b-4 border-l-4 border-green-500 rounded-bl-lg"></div>
-                    <div className="absolute bottom-0 right-0 w-8 h-8 border-b-4 border-r-4 border-green-500 rounded-br-lg"></div>
-                    
-                    {/* Laser Merah Animasi */}
-                    <div className="absolute left-0 right-0 top-1/2 h-0.5 bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.8)] animate-pulse"></div>
-                </div>
+          {/* Error State */}
+          {errorMsg && (
+              <div className="absolute inset-0 bg-slate-900 z-40 flex flex-col items-center justify-center p-6 text-center">
+                  <i className="fa-solid fa-triangle-exclamation text-4xl text-amber-500 mb-4"></i>
+                  <p className="text-white mb-6">{errorMsg}</p>
+                  <button onClick={() => { setErrorMsg(''); requestCameraPermission(); }} className="bg-blue-600 text-white px-6 py-3 rounded-lg font-bold">
+                      Coba Lagi / Izinkan
+                  </button>
+              </div>
+          )}
 
-                <p className="mt-6 text-white text-sm font-medium bg-black/50 px-3 py-1 rounded-full backdrop-blur-sm">
-                    Arahkan kamera ke barcode/QR
-                </p>
-            </div>
+          {/* Overlay Scanner */}
+          {!errorMsg && (
+              <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-10">
+                  <div style={{ width: boxSize.width, height: boxSize.height }} className="border-2 border-green-400 relative shadow-[0_0_0_100vmax_rgba(0,0,0,0.6)]">
+                      <div className="absolute top-1/2 left-0 right-0 h-0.5 bg-red-500 animate-pulse shadow-[0_0_8px_red]"></div>
+                  </div>
+                  <div className="mt-8 bg-black/60 backdrop-blur px-4 py-2 rounded-full">
+                      <p className="text-white text-xs font-medium">Jauhkan HP & Gunakan Zoom</p>
+                  </div>
+              </div>
+          )}
+      </div>
 
-            {/* Loading Indicator */}
-            {isLoading && (
-               <div className="absolute inset-0 z-30 flex items-center justify-center bg-black">
-                  <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-white"></div>
-               </div>
-            )}
-        </div>
+      {/* Controls */}
+      <div className="bg-slate-900 p-4 border-t border-slate-800 flex flex-col gap-4 z-20">
+          {/* Zoom Slider */}
+          {zoomCap && !errorMsg && (
+              <div className="px-2">
+                  <div className="flex justify-between text-[10px] text-slate-400 uppercase font-bold mb-1">
+                      <span>1x</span>
+                      <span>Zoom</span>
+                      <span>{zoomCap.max}x</span>
+                  </div>
+                  <input type="range" min={zoomCap.min} max={zoomCap.max} step={zoomCap.step} value={zoom} onChange={(e) => handleZoom(parseFloat(e.target.value))} className="w-full h-2 bg-slate-700 rounded-lg appearance-none accent-blue-500" />
+              </div>
+          )}
 
-        {/* Footer Controls */}
-        <div className="bg-slate-800 p-4 pb-8 z-20 border-t border-slate-700 space-y-4">
-            
-            {/* 1. Zoom Slider (KUNCI PERBAIKAN FOKUS) */}
-            {zoomCap && (
-                <div className="flex items-center gap-3 px-2">
-                    <span className="text-xs text-slate-400 font-bold">1x</span>
-                    <input 
-                        type="range" 
-                        min={zoomCap.min} 
-                        max={zoomCap.max} 
-                        step={zoomCap.step} 
-                        value={zoom}
-                        onChange={(e) => applyZoom(parseFloat(e.target.value))}
-                        className="w-full h-2 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                    />
-                    <span className="text-xs text-slate-400 font-bold">{zoomCap.max}x</span>
-                </div>
-            )}
-
-            {/* 2. Camera & Torch Controls */}
-            <div className="flex gap-2">
-                <div className="relative flex-1">
-                    <select 
-                        className="w-full bg-slate-700 text-white text-sm font-medium py-3 px-3 pr-8 rounded-lg outline-none focus:ring-2 focus:ring-blue-500 appearance-none"
-                        value={selectedCameraId}
-                        onChange={(e) => {
-                             const id = e.target.value;
-                             setSelectedCameraId(id);
-                             localStorage.setItem('scanner.cameraId', id);
-                             // Trigger restart via useEffect
-                        }}
-                    >
-                        {cameras.map((c, i) => (
-                            <option key={c.id} value={c.id}>
-                                {c.label || `Kamera ${i + 1}`}
-                            </option>
-                        ))}
-                    </select>
-                    {/* Icon Panah Dropdown */}
-                    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
-                        ▼
-                    </div>
-                </div>
-
-                {canTorch && (
-                    <button 
-                        onClick={() => applyTorch(!torchOn)}
-                        className={`w-12 flex items-center justify-center rounded-lg transition-colors ${torchOn ? 'bg-amber-500 text-white shadow-[0_0_10px_rgba(245,158,11,0.5)]' : 'bg-slate-700 text-slate-300'}`}
-                    >
-                        {/* Icon Petir */}
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-                        </svg>
-                    </button>
-                )}
-            </div>
-            
-            <div className="text-center">
-                 <p className="text-[10px] text-slate-500">
-                    Jika buram, mundur sedikit dan gunakan slider Zoom.
-                 </p>
-            </div>
-        </div>
+          <div className="flex gap-3">
+              <select className="flex-1 bg-slate-800 text-white border border-slate-700 rounded-lg px-3 py-3 text-sm font-bold outline-none" value={selectedCameraId} onChange={(e) => setSelectedCameraId(e.target.value)}>
+                  {cameras.map((c, i) => <option key={c.id} value={c.id}>{c.label || `Kamera ${i+1}`}</option>)}
+              </select>
+              
+              {canTorch && (
+                  <button onClick={handleTorch} className={`w-12 rounded-lg flex items-center justify-center text-xl border ${torchOn ? 'bg-amber-400 border-amber-400 text-black' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>
+                      <i className="fa-solid fa-bolt"></i>
+                  </button>
+              )}
+          </div>
       </div>
     </div>
   );
