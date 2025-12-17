@@ -7,22 +7,28 @@ interface CameraScannerProps {
 }
 
 export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onClose }) => {
+  // State Kamera
   const [cameras, setCameras] = useState<any[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('');
   const [cameraLabel, setCameraLabel] = useState<string>('Memuat kamera...');
   
+  // State Zoom (Solusi Masalah Fokus)
+  const [zoom, setZoom] = useState<number>(1);
+  const [zoomCap, setZoomCap] = useState<{ min: number; max: number; step: number } | null>(null);
+
   const scannerRef = useRef<Html5Qrcode | null>(null);
   const containerId = "reader-custom-view";
 
+  // 1. Init Kamera & Permission
   useEffect(() => {
     const initCamera = async () => {
       try {
-        await Html5Qrcode.getCameras(); // Trigger Permission
+        // Pancing Permission
+        await Html5Qrcode.getCameras(); 
         const devices = await Html5Qrcode.getCameras();
         
         if (devices && devices.length) {
-          // LOGIKA FILTER KAMERA IPHONE (ANTI ULTRA WIDE)
-          // Kita cari kamera belakang, TAPI buang yang ada tulisan 'Ultra' atau '0.5'
+          // LOGIKA FILTER KAMERA (Sama seperti kode asli Anda karena sudah benar)
           const backCameras = devices.filter(d => {
               const label = d.label.toLowerCase();
               return (label.includes('back') || label.includes('rear') || label.includes('belakang')) 
@@ -30,15 +36,12 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onC
                      && !label.includes('0.5');
           });
 
-          // Jika filter di atas kosong (misal nama kameranya aneh), ambil semua back camera
           const finalCandidates = backCameras.length > 0 ? backCameras : devices.filter(d => d.label.toLowerCase().includes('back'));
-          
-          // Fallback terakhir: ambil kamera apapun
           const validCameras = finalCandidates.length > 0 ? finalCandidates : devices;
           
-          setCameras(devices); // Simpan semua untuk dropdown (opsional user ganti)
+          setCameras(devices); 
           
-          // Pilih kandidat terbaik (biasanya yang terakhir di list adalah kamera utama High Res)
+          // Ambil kamera terakhir (biasanya kamera utama resolusi tinggi)
           const bestCam = validCameras[validCameras.length - 1];
           
           setSelectedCameraId(bestCam.id);
@@ -53,19 +56,23 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onC
     return () => { stopScanner(); };
   }, []);
 
+  // 2. Start Scanner dengan Settingan Fokus Baru
   const startScanner = async (cameraId: string) => {
     if (scannerRef.current) await stopScanner();
     
-    // Reset Element
-    const oldEl = document.getElementById(containerId);
-    if(oldEl) oldEl.innerHTML = "";
+    // Reset Zoom State saat ganti kamera
+    setZoom(1);
+    setZoomCap(null);
 
     const html5QrCode = new Html5Qrcode(containerId);
     scannerRef.current = html5QrCode;
 
+    // CONFIG PERBAIKAN:
+    // 1. FPS diturunkan ke 15 (Lebih terang di indoor, Autofokus lebih cepat bekerja)
+    // 2. Resolusi dinaikkan ke 720p (Agar barcode kecil terbaca saat dijauhkan)
     const config = {
-      fps: 30, // Max FPS
-      qrbox: { width: 300, height: 150 }, // Persegi Panjang (Cocok untuk Barcode Baju)
+      fps: 15, 
+      qrbox: { width: 280, height: 280 }, // Kotak scan
       aspectRatio: 1.0,
       disableFlip: false,
       formatsToSupport: [
@@ -81,13 +88,13 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onC
       await html5QrCode.start(
         cameraId,
         {
-           fps: 30,
-           qrbox: { width: 300, height: 150 },
-           // KHUSUS IOS: Resolusi Rendah = Lebih Cepat & Fokus
+           ...config,
            videoConstraints: {
-               width: 640, 
-               height: 480,
-               facingMode: "environment"
+               // Perbaikan: Jangan hardcode 480p. Gunakan range agar browser cari yang tajam.
+               width: { min: 640, ideal: 1280, max: 1920 },
+               height: { min: 480, ideal: 720, max: 1080 },
+               // Coba paksa mode fokus continuous
+               advanced: [{ focusMode: "continuous" }]
            }
         },
         (decodedText) => {
@@ -97,12 +104,50 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onC
         },
         () => {}
       );
+
+      // 3. SETELAH START SUKSES -> AKTIFKAN ZOOM CAPABILITY
+      // Ini trik agar slider zoom muncul
+      setTimeout(() => {
+          const video = document.querySelector(`#${containerId} video`) as HTMLVideoElement;
+          if (video && video.srcObject) {
+              const stream = video.srcObject as MediaStream;
+              const track = stream.getVideoTracks()[0];
+              const capabilities: any = track.getCapabilities ? track.getCapabilities() : {};
+
+              if (capabilities.zoom) {
+                  setZoomCap({
+                      min: capabilities.zoom.min || 1,
+                      max: Math.min(capabilities.zoom.max || 5, 4), // Batasi max zoom 4x
+                      step: capabilities.zoom.step || 0.1
+                  });
+                  // Auto Zoom sedikit (1.2x) untuk memancing fokus
+                  applyZoom(1.2, track);
+              }
+          }
+      }, 500);
+
     } catch (err) {
       console.error("Start failed", err);
-      // Retry Mode Basic jika gagal
+      // Fallback mode ringan jika gagal
       try {
-         await html5QrCode.start(cameraId, { fps: 20, qrbox: 250 }, (t)=>onScanSuccess(t), ()=>{});
+         await html5QrCode.start(cameraId, { fps: 15, qrbox: 250 }, (t)=>onScanSuccess(t), ()=>{});
       } catch(e) {}
+    }
+  };
+
+  const applyZoom = (value: number, trackParam?: MediaStreamTrack) => {
+    // Logic untuk apply zoom ke hardware kamera
+    const video = document.querySelector(`#${containerId} video`) as HTMLVideoElement;
+    if (!video || !video.srcObject) return;
+    
+    const track = trackParam || (video.srcObject as MediaStream).getVideoTracks()[0];
+    
+    try {
+        // @ts-ignore
+        track.applyConstraints({ advanced: [{ zoom: value }] });
+        setZoom(value);
+    } catch (e) {
+        console.log("Zoom not supported", e);
     }
   };
 
@@ -117,7 +162,7 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onC
   }, [selectedCameraId]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black p-0 sm:p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black">
       <div className="bg-slate-900 w-full max-w-md h-full flex flex-col relative">
         
         {/* Header */}
@@ -134,34 +179,43 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onC
         <div className="flex-1 relative bg-black flex items-center justify-center overflow-hidden">
              <div id="reader-custom-view" className="w-full h-full object-cover"></div>
              
-             {/* Overlay Laser Hijau (Lebih Kontras) */}
-             <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-10">
-                <div className="w-[300px] h-[150px] border-[3px] border-green-400/50 rounded-lg relative box-border shadow-[0_0_50px_rgba(0,0,0,0.8)_inset]">
-                    {/* Garis Laser */}
-                    <div className="absolute w-full h-[2px] bg-green-400 shadow-[0_0_10px_#4ade80] top-1/2 animate-pulse"></div>
-                    
-                    {/* Pojokan */}
-                    <div className="absolute top-0 left-0 w-4 h-4 border-t-4 border-l-4 border-green-500"></div>
-                    <div className="absolute top-0 right-0 w-4 h-4 border-t-4 border-r-4 border-green-500"></div>
-                    <div className="absolute bottom-0 left-0 w-4 h-4 border-b-4 border-l-4 border-green-500"></div>
-                    <div className="absolute bottom-0 right-0 w-4 h-4 border-b-4 border-r-4 border-green-500"></div>
+             {/* Overlay Laser */}
+             <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-10">
+                <div className="w-[280px] h-[280px] border-2 border-green-500/80 rounded-lg relative shadow-[0_0_1000px_rgba(0,0,0,0.5)_inset]">
+                    <div className="absolute w-full h-[2px] bg-red-500 top-1/2 animate-pulse shadow-[0_0_8px_red]"></div>
                 </div>
-             </div>
-             
-             <div className="absolute bottom-10 w-full text-center z-20">
-                 <p className="text-white text-xs font-bold bg-black/60 inline-block px-4 py-1 rounded-full">
-                    Jarak Optimal: 15cm - 20cm
-                 </p>
+                {/* Instruksi */}
+                <div className="mt-8 bg-black/60 px-4 py-2 rounded-full backdrop-blur-sm">
+                    <p className="text-white text-xs font-bold">
+                       Jarak 15-20cm & Gunakan Zoom
+                    </p>
+                </div>
              </div>
         </div>
 
         {/* Controls */}
-        <div className="p-5 bg-slate-800 shrink-0 z-20 border-t border-slate-700">
-           <div className="flex justify-between items-center mb-2">
-               <label className="text-slate-400 text-[10px] uppercase font-bold">Kamera Aktif</label>
-               <span className="text-green-400 text-[10px] font-bold animate-pulse">● LIVE</span>
-           </div>
+        <div className="p-5 bg-slate-800 shrink-0 z-20 border-t border-slate-700 space-y-4">
            
+           {/* FITUR BARU: ZOOM SLIDER */}
+           {zoomCap && (
+               <div className="bg-slate-700/50 p-3 rounded-lg">
+                   <div className="flex justify-between text-[10px] text-slate-300 font-bold uppercase mb-2">
+                       <span>Mundur</span>
+                       <span>Zoom: {zoom.toFixed(1)}x</span>
+                       <span>Dekat</span>
+                   </div>
+                   <input 
+                       type="range" 
+                       min={zoomCap.min} 
+                       max={zoomCap.max} 
+                       step={zoomCap.step} 
+                       value={zoom}
+                       onChange={(e) => applyZoom(parseFloat(e.target.value))}
+                       className="w-full h-2 bg-slate-600 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                   />
+               </div>
+           )}
+
            <div className="flex gap-2">
                <select 
                  className="flex-1 bg-white text-slate-900 font-bold p-3 rounded outline-none border-2 border-blue-500 text-xs"
@@ -170,7 +224,7 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onC
                >
                  {cameras.map((cam) => (
                    <option key={cam.id} value={cam.id}>
-                     {cam.label.replace(/camera/gi, '').substring(0, 25)}...
+                     {cam.label || `Kamera ${cam.id.substring(0,5)}...`}
                    </option>
                  ))}
                </select>
@@ -181,9 +235,12 @@ export const CameraScanner: React.FC<CameraScannerProps> = ({ onScanSuccess, onC
                 <i className="fa-solid fa-rotate"></i>
                </button>
            </div>
-           <p className="text-[10px] text-slate-500 mt-2 text-center">
-             Menggunakan: {cameraLabel}
-           </p>
+           
+           {!zoomCap && (
+               <p className="text-[10px] text-slate-500 text-center">
+                  *Mundur sedikit jika gambar buram
+               </p>
+           )}
         </div>
       </div>
     </div>
