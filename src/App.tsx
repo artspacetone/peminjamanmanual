@@ -1,360 +1,1005 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
-import SignatureCanvas from 'react-signature-canvas';
+import { AudioPresets, setupAudioOnFirstInteraction } from './services/audioService';
 
-const API_BASE = 'http://localhost:5000/api'; 
+// Components
+import ScannerInput from './components/ScannerInput';
+import DashboardStats from './components/DashboardStats';
+import FeedbackDisplay from './components/FeedbackDisplay';
+import InventoryTable from './components/InventoryTable';
+import CameraScanner from './components/CameraScanner';
+import LoanSystem from './components/LoanSystem';
+import ReturnSystem from './components/ReturnSystem';
+import BorrowerManagement from './components/BorrowerManagement';
 
-// --- UTILITIES ---
-const formatDate = (d: string) => d ? new Date(d).toLocaleDateString('id-ID') : '-';
-const formatMoney = (n: number) => new Intl.NumberFormat('id-ID', {style:'currency', currency:'IDR'}).format(n);
+// Types
+interface InventoryItem {
+  id: number;
+  barcode: string;
+  item_name: string;
+  brand: string;
+  size: string;
+  color: string;
+  price: number;
+  status: string;
+  receive_no: string;
+  receive_date: string;
+  updated_at: string;
+  created_at: string;
+}
 
-// --- COMPONENTS ---
-const LoadingOverlay = ({ msg }: { msg: string }) => (
-    <div className="fixed inset-0 bg-black bg-opacity-70 z-50 flex flex-col items-center justify-center backdrop-blur-sm">
-        <div className="animate-spin rounded-full h-16 w-16 border-t-4 border-blue-500 mb-4"></div>
-        <h2 className="text-white text-xl font-bold animate-pulse">{msg}</h2>
-    </div>
-);
+interface ScanFeedback {
+  status: 'IDLE' | 'PROCESSING' | 'FOUND' | 'NOT_FOUND' | 'DUPLICATE' | 'ERROR' | 'SUCCESS';
+  message: string;
+  item: InventoryItem | null;
+}
 
-const PrintLayout = ({ data, type }: any) => {
-    if (!data) return null;
-    return (
-        <div className="print-only p-8 bg-white text-black font-sans">
-            <div className="border-b-2 border-black pb-4 mb-6 flex justify-between">
-                <div>
-                    <h1 className="text-3xl font-bold uppercase tracking-widest">{type === 'LOAN' ? 'FORM PEMINJAMAN' : 'FORM PENGEMBALIAN'}</h1>
-                    <p className="text-sm uppercase tracking-wide">Wardrobe & Property Dept</p>
-                </div>
-                <div className="text-right">
-                    <h2 className="text-xl font-bold">{data.invoice_no || 'RET-'+Date.now()}</h2>
-                    <p className="text-xs">Dicetak: {new Date().toLocaleString()}</p>
-                </div>
-            </div>
-            
-            <div className="grid grid-cols-2 gap-8 mb-6 text-sm border p-4 rounded">
-                <div>
-                    <table className="w-full">
-                        <tbody>
-                            <tr><td className="font-bold w-32">Peminjam</td><td>: {data.borrower_name}</td></tr>
-                            {type === 'LOAN' && <tr><td className="font-bold">Program</td><td>: {data.program_name}</td></tr>}
-                            <tr><td className="font-bold">Petugas Input</td><td>: {data.inputter_name}</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-                <div className="text-right">
-                    {type === 'LOAN' && (
-                        <>
-                            <p className="font-bold text-lg mb-1">DEADLINE (21 Hari)</p>
-                            <p className="text-2xl font-bold text-red-600 border-2 border-red-600 inline-block px-2">{formatDate(data.due_date)}</p>
-                        </>
-                    )}
-                </div>
-            </div>
+// API Configuration
+const API_BASE_URL = 'http://10.5.28.10:5000/api';
 
-            <table className="w-full border-collapse border border-black mb-8 text-xs">
-                <thead>
-                    <tr className="bg-gray-200">
-                        <th className="border border-black p-2 w-10">No</th>
-                        <th className="border border-black p-2 w-32">Barcode</th>
-                        <th className="border border-black p-2">Nama Barang</th>
-                        <th className="border border-black p-2 w-32">Status</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {data.items.map((item: any, idx: number) => (
-                        <tr key={idx}>
-                            <td className="border border-black p-2 text-center">{idx + 1}</td>
-                            <td className="border border-black p-2 font-mono text-center">{item.barcode}</td>
-                            <td className="border border-black p-2">{item.item_name}</td>
-                            <td className="border border-black p-2 text-center">{type==='LOAN'?'Dipinjam':'Dikembalikan'}</td>
-                        </tr>
-                    ))}
-                </tbody>
-            </table>
-
-            <div className="flex justify-between mt-16 text-center text-sm break-inside-avoid">
-                <div className="w-1/3">
-                    <p className="mb-16">Petugas,</p>
-                    <div className="border-b border-black"></div>
-                    <p className="font-bold mt-2">{data.inputter_name}</p>
-                </div>
-                <div className="w-1/3">
-                    <p className="mb-2">Peminjam,</p>
-                    {data.signature ? <img src={data.signature} alt="TTD" className="h-16 mx-auto mb-2" /> : <div className="h-16"></div>}
-                    <div className="border-b border-black"></div>
-                    <p className="font-bold mt-2">{data.borrower_name}</p>
-                </div>
-            </div>
-        </div>
-    );
-};
-
-// --- MAIN APP ---
 const App: React.FC = () => {
-    const [user, setUser] = useState<any>(null);
-    const [activeTab, setActiveTab] = useState('DASHBOARD');
-    const [isLoading, setIsLoading] = useState(false);
-    const [loadingMsg, setLoadingMsg] = useState('');
+  // State Management
+  const [tableData, setTableData] = useState<InventoryItem[]>([]);
+  const [stats, setStats] = useState({ 
+    total: 0, 
+    scanned: 0,
+    on_loan: 0,
+    available: 0
+  });
+  const [lastScanFeedback, setLastScanFeedback] = useState<ScanFeedback>({ 
+    status: 'IDLE', 
+    message: 'Ready to scan',
+    item: null
+  });
+  const [isLoading, setIsLoading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [showCamera, setShowCamera] = useState(false);
+  const [showLoanSystem, setShowLoanSystem] = useState(false);
+  const [showReturnSystem, setShowReturnSystem] = useState(false);
+  const [showBorrowerManagement, setShowBorrowerManagement] = useState(false);
+  const [lastScanTime, setLastScanTime] = useState<number>(0);
+  const [audioInitialized, setAudioInitialized] = useState(false);
+  const [serverStatus, setServerStatus] = useState<'connected' | 'disconnected' | 'checking'>('checking');
+  const [activeMenu, setActiveMenu] = useState<'inventory' | 'loans' | 'returns' | 'borrowers'>('inventory');
+  const [searchQuery, setSearchQuery] = useState('');
+
+  // Refs
+  const scanTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const uploadProgressIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Check server connection
+  const checkServerConnection = async () => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/health`, { timeout: 5000 });
+      setServerStatus('connected');
+      console.log('✅ Server connected:', response.data);
+      return true;
+    } catch (error) {
+      setServerStatus('disconnected');
+      console.error('❌ Server connection failed:', error);
+      return false;
+    }
+  };
+
+  // Initialize audio and data
+  useEffect(() => {
+    // Setup audio
+    setupAudioOnFirstInteraction();
+    setAudioInitialized(true);
     
-    // Data
-    const [stats, setStats] = useState({ total: 0, on_loan: 0, available: 0 });
-    const [items, setItems] = useState<any[]>([]);
-    const [borrowers, setBorrowers] = useState<any[]>([]);
-    const [usersList, setUsersList] = useState<any[]>([]);
-    const [logs, setLogs] = useState<any[]>([]);
+    // Pre-warm audio
+    const handleFirstInteraction = () => {
+      try {
+        AudioPresets.BUTTON_CLICK();
+      } catch (error) {
+        console.warn('Audio warmup failed:', error);
+      }
+    };
     
-    // Print
-    const [printData, setPrintData] = useState<any>(null);
-    const [printType, setPrintType] = useState<'LOAN'|'RETURN'>('LOAN');
-
-    // Inputs
-    const [loginForm, setLoginForm] = useState({ username: '', password: '' });
-    const [scanInput, setScanInput] = useState('');
-    const [filterInput, setFilterInput] = useState('');
+    document.addEventListener('click', handleFirstInteraction, { once: true });
     
-    // Forms
-    const [cart, setCart] = useState<any[]>([]);
-    const [loanForm, setLoanForm] = useState({ program: '', reason: '', borrower_id: '' });
-    const [newUser, setNewUser] = useState({ fullname: '', username: '', nik: '', password: '', role: 'staff' });
-    const [newBorrower, setNewBorrower] = useState({ nik: '', name: '', phone: '', position: '' });
+    // Check server and load data
+    const initializeApp = async () => {
+      const connected = await checkServerConnection();
+      if (connected) {
+        await refreshData();
+      } else {
+        setLastScanFeedback({
+          status: 'ERROR',
+          message: 'Cannot connect to server. Please check server is running.',
+          item: null
+        });
+      }
+    };
     
-    const sigPad = useRef<any>(null);
-    const api = axios.create({ baseURL: API_BASE });
+    initializeApp();
 
-    // Init
-    useEffect(() => {
-        const u = localStorage.getItem('wardrobe_user');
-        if(u) setUser(JSON.parse(u));
-    }, []);
-
-    useEffect(() => {
-        if(user) {
-            if(activeTab === 'DASHBOARD') fetchStats();
-            if(activeTab === 'ITEMS') fetchItems();
-            if(['LOAN','RETURN','BORROWERS'].includes(activeTab)) fetchBorrowers();
-            if(activeTab === 'USERS') fetchUsers();
-            if(activeTab === 'LOGS') fetchLogs();
-        }
-    }, [user, activeTab]);
-
-    // API Calls
-    const fetchStats = async () => { try { const r = await api.get('/stats'); setStats(r.data); } catch(e){} };
-    const fetchItems = async () => { try { const r = await api.get(`/items?search=${filterInput}`); setItems(r.data); } catch(e){} };
-    const fetchBorrowers = async () => { try { const r = await api.get('/borrowers'); setBorrowers(r.data); } catch(e){} };
-    const fetchUsers = async () => { try { const r = await api.get('/users'); setUsersList(r.data); } catch(e){} };
-    const fetchLogs = async () => { try { const r = await api.get('/logs'); setLogs(r.data); } catch(e){} };
-
-    // Handlers
-    const handleLogin = async (e: any) => {
-        e.preventDefault();
-        setLoadingMsg("Login..."); setIsLoading(true);
-        try {
-            const r = await api.post('/login', loginForm);
-            setUser(r.data.user);
-            localStorage.setItem('wardrobe_user', JSON.stringify(r.data.user));
-        } catch(e) { alert("Login Gagal"); }
-        finally { setIsLoading(false); }
+    // Cleanup
+    return () => {
+      if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
+      if (uploadProgressIntervalRef.current) clearInterval(uploadProgressIntervalRef.current);
+      document.removeEventListener('click', handleFirstInteraction);
     };
+  }, []);
 
-    const handleUpload = async (e: any) => {
-        const file = e.target.files[0];
-        if(!file) return;
-        const fd = new FormData(); fd.append('file', file);
-        setLoadingMsg("Mengupload & Memproses Data..."); setIsLoading(true);
-        try {
-            const r = await api.post('/items/upload', fd);
-            alert(`Sukses! ${r.data.count} data diproses.`);
-            if(activeTab==='ITEMS') fetchItems();
-        } catch(e: any) { alert("Upload Gagal: " + e.response?.data?.detail || e.message); }
-        finally { setIsLoading(false); e.target.value = null; }
-    };
+  // API Functions
+  const getInventoryStats = async () => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/stats`);
+      if (response.data.success) {
+        return response.data.data;
+      }
+      throw new Error(response.data.error);
+    } catch (error) {
+      console.error('Get stats error:', error);
+      throw error;
+    }
+  };
 
-    const handleCreateUser = async (e:any) => {
-        e.preventDefault(); setIsLoading(true);
-        try { await api.post('/users', newUser); alert("User dibuat!"); fetchUsers(); setNewUser({fullname:'', username:'', nik:'', password:'', role:'staff'}); }
-        catch(e) { alert("Gagal"); } finally { setIsLoading(false); }
-    };
+  const fetchRecentInventory = async () => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/items`, {
+        params: { limit: 100 }
+      });
+      if (response.data.success) {
+        return response.data.data;
+      }
+      throw new Error(response.data.error);
+    } catch (error) {
+      console.error('Fetch inventory error:', error);
+      throw error;
+    }
+  };
 
-    const handleCreateBorrower = async (e:any) => {
-        e.preventDefault(); setIsLoading(true);
-        try { await api.post('/borrowers', newBorrower); alert("Peminjam ditambahkan!"); fetchBorrowers(); setNewBorrower({nik:'', name:'', phone:'', position:''}); }
-        catch(e) { alert("Gagal"); } finally { setIsLoading(false); }
-    };
+  const getItemByBarcode = async (barcode: string) => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/items/${barcode}`);
+      if (response.data.success && response.data.found) {
+        return response.data.data;
+      }
+      return null;
+    } catch (error) {
+      console.error('Get item error:', error);
+      throw error;
+    }
+  };
 
-    const handleScanLoan = async (bc: string) => {
-        if(!bc) return;
-        if(cart.find(c=>c.barcode===bc)) return alert("Sudah ada di keranjang");
-        try {
-            const r = await api.get(`/items/${bc}`);
-            if(r.data.found && r.data.data.status==='Available') setCart([...cart, r.data.data]);
-            else alert("Barang tidak tersedia / tidak ditemukan");
-        } catch(e){}
-    };
+  const markItemAsScanned = async (barcode: string) => {
+    try {
+      // Update item status to scanned
+      const response = await axios.put(`${API_BASE_URL}/items/${barcode}/status`, {
+        status: 'Scanned',
+        user: 'Admin'
+      });
+      
+      if (response.data.success) {
+        return response.data.data;
+      }
+      throw new Error('Failed to mark item as scanned');
+    } catch (error) {
+      console.error('Mark scanned error:', error);
+      throw error;
+    }
+  };
 
-    const submitLoan = async () => {
-        if(!loanForm.borrower_id || cart.length===0 || sigPad.current.isEmpty()) return alert("Data Belum Lengkap!");
-        const borrower = borrowers.find(b=>b.id==loanForm.borrower_id);
-        setLoadingMsg("Memproses Transaksi..."); setIsLoading(true);
-        try {
-            const r = await api.post('/loan', {
-                ...loanForm, borrower_name: borrower.name, inputter_name: user.fullname, inputter_nik: user.nik,
-                signature_base64: sigPad.current.getCanvas().toDataURL(), items: cart.map(c=>c.barcode)
-            });
-            setPrintType('LOAN');
-            setPrintData({ invoice_no: r.data.invoice_no, program_name: loanForm.program, borrower_name: borrower.name, inputter_name: user.fullname, due_date: r.data.due_date, signature: sigPad.current.getCanvas().toDataURL(), items: cart });
-            setCart([]); setLoanForm({...loanForm, program:'', reason:''}); sigPad.current.clear();
-            setTimeout(()=>window.print(), 1000);
-        } catch(e:any) { alert("Gagal: " + e.response?.data?.message); }
-        finally { setIsLoading(false); }
-    };
+  // Refresh inventory data
+  const refreshData = async () => {
+    try {
+      const [statData, recentData] = await Promise.all([
+        getInventoryStats(),
+        fetchRecentInventory()
+      ]);
+      setStats(statData);
+      setTableData(recentData);
+      
+    } catch (error) {
+      console.error("Sync Error", error);
+      setLastScanFeedback({
+        status: 'ERROR',
+        message: 'Failed to sync data with server',
+        item: null
+      });
+    }
+  };
 
-    const handleReturn = async (bc: string) => {
-        if(!bc) return;
-        setLoadingMsg("Memproses Pengembalian..."); setIsLoading(true);
-        try {
-            const r = await api.post('/return', { barcode: bc, inputter_name: user.fullname });
-            setPrintType('RETURN');
-            setPrintData({ borrower_name: r.data.data.borrower_name, inputter_name: user.fullname, items: [{barcode: bc, item_name: r.data.data.item_name}] });
-            alert("Barang Dikembalikan!");
-            setTimeout(()=>window.print(), 1000);
-        } catch(e:any) { alert(e.response?.data?.message || "Gagal"); }
-        finally { setIsLoading(false); }
-    };
+  // Handle file upload
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
 
-    if(!user) return (
-        <div className="min-h-screen bg-gray-900 flex items-center justify-center">
-            <form onSubmit={handleLogin} className="bg-white p-8 rounded-xl shadow-xl w-96">
-                <h1 className="text-2xl font-bold text-center mb-6">LOGIN WARDROBE</h1>
-                <input className="w-full p-3 mb-3 border rounded" placeholder="Username" value={loginForm.username} onChange={e=>setLoginForm({...loginForm, username:e.target.value})} />
-                <input className="w-full p-3 mb-6 border rounded" type="password" placeholder="Password" value={loginForm.password} onChange={e=>setLoginForm({...loginForm, password:e.target.value})} />
-                <button className="w-full bg-blue-600 text-white p-3 rounded font-bold hover:bg-blue-700">LOGIN</button>
-            </form>
-            {isLoading && <LoadingOverlay msg={loadingMsg} />}
-        </div>
+    // Check file type
+    const validTypes = [
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'application/vnd.ms-excel',
+      'text/csv'
+    ];
+    
+    if (!validTypes.includes(file.type) && !file.name.match(/\.(xlsx|xls|csv)$/i)) {
+      alert('Invalid file type. Please upload Excel (.xlsx, .xls) or CSV file.');
+      event.target.value = '';
+      return;
+    }
+
+    const confirmUpload = window.confirm(
+      `Upload Data Stok?\n\nFile: ${file.name}\nSize: ${(file.size / 1024 / 1024).toFixed(2)} MB\n\nRequired columns in Excel:\n- Barcode (required)\n- Item Name\n- Brand\n- Size\n- Color\n- Price\n- Receive No\n- Receive Date`
     );
 
-    return (
-        <div className="flex min-h-screen bg-gray-100 font-sans text-gray-800">
-            {isLoading && <LoadingOverlay msg={loadingMsg} />}
-            <PrintLayout data={printData} type={printType} />
+    if (!confirmUpload) {
+      event.target.value = '';
+      return;
+    }
 
-            {/* SIDEBAR */}
-            <div className="w-64 bg-gray-900 text-gray-300 fixed h-full flex flex-col no-print">
-                <div className="p-6 border-b border-gray-800">
-                    <h1 className="text-xl font-bold text-white">WARDROBE<span className="text-blue-500">SYS</span></h1>
-                    <p className="text-sm mt-2">{user.fullname}</p>
-                    <p className="text-xs text-gray-500">{user.role.toUpperCase()} | NIK: {user.nik || '-'}</p>
-                </div>
-                <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
-                    {[{id:'DASHBOARD',l:'Dashboard',i:'fa-home'}, {id:'LOAN',l:'Peminjaman',i:'fa-cart-plus'}, {id:'RETURN',l:'Pengembalian',i:'fa-undo'}, 
-                      {id:'ITEMS',l:'Data Barang',i:'fa-shirt'}, {id:'UPLOAD',l:'Upload Stock',i:'fa-upload'}, {id:'BORROWERS',l:'Data Peminjam',i:'fa-address-book'},
-                      {id:'LOGS',l:'Riwayat Log',i:'fa-history'}, ...(user.role==='admin'?[{id:'USERS',l:'Kelola Staff',i:'fa-users-gear'}]:[])]
-                    .map(m=>(
-                        <button key={m.id} onClick={()=>setActiveTab(m.id)} className={`w-full text-left p-3 rounded flex items-center gap-3 ${activeTab===m.id?'bg-blue-600 text-white shadow-lg':'hover:bg-gray-800'}`}>
-                            <i className={`fa-solid ${m.i} w-5`}></i> {m.l}
-                        </button>
-                    ))}
-                </nav>
-                <div className="p-4"><button onClick={()=>{setUser(null); localStorage.removeItem('wardrobe_user');}} className="w-full bg-red-900/50 text-red-300 py-2 rounded hover:bg-red-600 hover:text-white transition">LOGOUT</button></div>
+    setIsLoading(true);
+    setUploadProgress(0);
+    setLastScanFeedback({ 
+      status: 'PROCESSING', 
+      message: 'Processing Excel file...',
+      item: null
+    });
+
+    // Simulate progress
+    let progress = 0;
+    uploadProgressIntervalRef.current = setInterval(() => {
+      progress += 5;
+      if (progress <= 90) {
+        setUploadProgress(progress);
+      }
+    }, 100);
+
+    try {
+      // Check server
+      const connected = await checkServerConnection();
+      if (!connected) {
+        throw new Error('Server is not connected. Please start the server.');
+      }
+
+      // Create FormData
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('user', 'Admin User');
+
+      // Upload file
+      const response = await axios.post(`${API_BASE_URL}/upload-excel`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        onUploadProgress: (progressEvent) => {
+          if (progressEvent.total) {
+            const percentCompleted = Math.round((progressEvent.loaded * 90) / progressEvent.total);
+            setUploadProgress(percentCompleted);
+          }
+        },
+        timeout: 300000, // 5 minutes
+      });
+
+      // Clear progress interval
+      if (uploadProgressIntervalRef.current) {
+        clearInterval(uploadProgressIntervalRef.current);
+      }
+      setUploadProgress(100);
+
+      if (response.data.success) {
+        AudioPresets.UPLOAD_COMPLETE();
+        setLastScanFeedback({
+          status: 'SUCCESS',
+          message: response.data.message || 'Upload successful!',
+          item: null
+        });
+
+        // Show success message with details
+        setTimeout(() => {
+          if (response.data.stats) {
+            const { added, updated, skipped } = response.data.stats;
+            alert(`✅ Upload Summary:\n\n📥 Added: ${added} items\n📝 Updated: ${updated} items\n⏭️ Skipped: ${skipped} items`);
+          }
+        }, 500);
+
+        // Refresh data
+        await refreshData();
+      } else {
+        throw new Error(response.data.message || 'Upload failed');
+      }
+
+    } catch (error: any) {
+      console.error('Upload error:', error);
+      
+      if (uploadProgressIntervalRef.current) {
+        clearInterval(uploadProgressIntervalRef.current);
+      }
+      
+      AudioPresets.ITEM_NOT_FOUND();
+      
+      let errorMessage = 'Upload failed. ';
+      if (error.response?.data?.message) {
+        errorMessage += error.response.data.message;
+      } else if (error.message) {
+        errorMessage += error.message;
+      } else {
+        errorMessage += 'Unknown error.';
+      }
+      
+      setLastScanFeedback({
+        status: 'ERROR',
+        message: errorMessage,
+        item: null
+      });
+      
+      alert(`❌ Upload Error:\n\n${errorMessage}\n\nPlease check:\n1. Server is running\n2. Excel format is correct\n3. Network connection`);
+    } finally {
+      setIsLoading(false);
+      setTimeout(() => setUploadProgress(0), 1000);
+      event.target.value = '';
+    }
+  };
+
+  // Handle export data
+  const handleExport = async (filterType: 'ALL' | 'SCANNED' | 'PENDING' | 'ON_LOAN') => {
+    if (tableData.length === 0) {
+      alert("No data available for export.");
+      return;
+    }
+
+    const button = document.getElementById('export-btn-text');
+    const originalText = button?.textContent || 'DOWNLOAD REPORT';
+    
+    if (button) button.textContent = "Processing...";
+
+    try {
+      let dataToExport = [...tableData];
+      
+      // Filter data
+      if (filterType === 'SCANNED') {
+        dataToExport = dataToExport.filter(item => 
+          item.status === 'Scanned'
+        );
+      } else if (filterType === 'ON_LOAN') {
+        dataToExport = dataToExport.filter(item => 
+          item.status === 'On Loan'
+        );
+      } else if (filterType === 'PENDING') {
+        dataToExport = dataToExport.filter(item => 
+          item.status === 'Available'
+        );
+      }
+
+      if (dataToExport.length === 0) {
+        alert("No data matches the selected filter.");
+        return;
+      }
+
+      // Prepare CSV content
+      const headers = [
+        "Barcode",
+        "Item Name",
+        "Brand",
+        "Size", 
+        "Color",
+        "Price",
+        "Status",
+        "Receive No",
+        "Receive Date",
+        "Last Updated"
+      ];
+
+      const rows = dataToExport.map(item => [
+        item.barcode,
+        `"${(item.item_name || '').replace(/"/g, '""')}"`,
+        item.brand || '',
+        item.size || '',
+        item.color || '',
+        Number(item.price || 0).toFixed(2),
+        item.status || 'Available',
+        item.receive_no || '',
+        item.receive_date || '',
+        item.updated_at ? new Date(item.updated_at).toLocaleString('id-ID') : '-'
+      ]);
+
+      const csvContent = [
+        headers.join(','),
+        ...rows.map(row => row.join(','))
+      ].join('\n');
+
+      // Create and download CSV file
+      const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `Inventory_${filterType}_${new Date().toISOString().split('T')[0]}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      // Success feedback
+      AudioPresets.EXPORT_COMPLETE();
+      setLastScanFeedback({
+        status: 'SUCCESS',
+        message: `Exported ${dataToExport.length} items successfully`,
+        item: null
+      });
+
+    } catch (error) {
+      console.error('Export error:', error);
+      AudioPresets.ITEM_NOT_FOUND();
+      alert("Error during export. Please try again.");
+    } finally {
+      if (button) button.textContent = originalText;
+    }
+  };
+
+  // Handle clear all data
+  const handleClearData = async () => {
+    const confirmed = window.confirm(
+      "⚠️ WARNING: DELETE ALL DATA?\n\nThis will permanently delete ALL inventory data and cannot be undone.\n\nType 'DELETE_CONFIRM' to confirm:"
+    );
+
+    if (!confirmed) return;
+
+    const userInput = prompt("Please type 'DELETE_CONFIRM' to confirm:");
+    if (userInput !== 'DELETE_CONFIRM') {
+      alert('Cancelled. Data was NOT deleted.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const response = await axios.delete(`${API_BASE_URL}/clear/all`, {
+        data: {
+          password: 'DELETE_CONFIRM',
+          user: 'Admin'
+        }
+      });
+      
+      if (response.data.success) {
+        setTableData([]);
+        setStats({ total: 0, scanned: 0, on_loan: 0, available: 0 });
+        
+        AudioPresets.UPLOAD_COMPLETE();
+        setLastScanFeedback({
+          status: 'SUCCESS',
+          message: 'All data has been cleared',
+          item: null
+        });
+        
+        alert('✅ All data cleared successfully');
+      }
+    } catch (error: any) {
+      console.error('Clear data error:', error);
+      AudioPresets.ITEM_NOT_FOUND();
+      setLastScanFeedback({
+        status: 'ERROR',
+        message: 'Failed to clear data',
+        item: null
+      });
+      alert(`Error: ${error.response?.data?.message || error.message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Handle barcode scan
+  const handleScan = useCallback(async (barcode: string) => {
+    // Debounce
+    const now = Date.now();
+    if (now - lastScanTime < 500) return;
+    setLastScanTime(now);
+
+    if (!barcode.trim() || isProcessing) return;
+
+    setIsProcessing(true);
+    const searchCode = barcode.trim();
+
+    // Clear previous feedback timeout
+    if (scanTimeoutRef.current) clearTimeout(scanTimeoutRef.current);
+
+    try {
+      const item = await getItemByBarcode(searchCode);
+      
+      if (!item) {
+        AudioPresets.ITEM_NOT_FOUND();
+        setLastScanFeedback({
+          status: 'NOT_FOUND',
+          message: 'BARCODE NOT FOUND',
+          item: null
+        });
+      } else if (item.status === 'Scanned') {
+        AudioPresets.ITEM_DUPLICATE();
+        setLastScanFeedback({
+          status: 'DUPLICATE',
+          message: 'ALREADY SCANNED',
+          item: item
+        });
+      } else if (item.status === 'On Loan') {
+        AudioPresets.ITEM_NOT_FOUND();
+        setLastScanFeedback({
+          status: 'ERROR',
+          message: 'ITEM IS ON LOAN',
+          item: item
+        });
+      } else {
+        const scannedItem = await markItemAsScanned(searchCode);
+        AudioPresets.ITEM_FOUND();
+        setLastScanFeedback({
+          status: 'FOUND',
+          message: `${scannedItem.item_name || 'ITEM'} SCANNED SUCCESSFULLY`,
+          item: scannedItem
+        });
+        
+        // Refresh data after successful scan
+        await refreshData();
+      }
+    } catch (error) {
+      console.error('Scan error:', error);
+      AudioPresets.ITEM_NOT_FOUND();
+      setLastScanFeedback({
+        status: 'ERROR',
+        message: 'SERVER ERROR',
+        item: null
+      });
+    } finally {
+      setIsProcessing(false);
+      
+      // Auto-clear feedback after 3 seconds
+      scanTimeoutRef.current = setTimeout(() => {
+        setLastScanFeedback({
+          status: 'IDLE',
+          message: 'Ready to scan',
+          item: null
+        });
+      }, 3000);
+    }
+  }, [isProcessing, lastScanTime]);
+
+  // Handle camera scan success
+  const handleCameraScanSuccess = useCallback((barcode: string) => {
+    AudioPresets.CAMERA_SCAN_SUCCESS();
+    handleScan(barcode);
+    setShowCamera(false);
+  }, [handleScan]);
+
+  // Handle camera scan start
+  const handleCameraStart = () => {
+    if (serverStatus !== 'connected') {
+      alert('Please connect to server first');
+      return;
+    }
+    AudioPresets.CAMERA_SCAN_START();
+    setShowCamera(true);
+  };
+
+  // Test audio function
+  const testAudio = () => {
+    try {
+      AudioPresets.ITEM_FOUND();
+      setTimeout(() => AudioPresets.ITEM_DUPLICATE(), 300);
+      setTimeout(() => AudioPresets.ITEM_NOT_FOUND(), 600);
+      setTimeout(() => AudioPresets.UPLOAD_COMPLETE(), 900);
+    } catch (error) {
+      console.warn('Audio test failed:', error);
+    }
+  };
+
+  // Test server connection
+  const testServerConnection = async () => {
+    setIsLoading(true);
+    try {
+      const response = await axios.get(`${API_BASE_URL}/test`, { timeout: 5000 });
+      alert(`✅ Server is running!\n\n${JSON.stringify(response.data, null, 2)}`);
+      setServerStatus('connected');
+    } catch (error) {
+      alert(`❌ Server connection failed:\n\n${error.message}`);
+      setServerStatus('disconnected');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Handle search
+  const handleSearch = async () => {
+    if (!searchQuery.trim()) {
+      await refreshData();
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const response = await axios.get(`${API_BASE_URL}/items`, {
+        params: { search: searchQuery }
+      });
+      
+      if (response.data.success) {
+        setTableData(response.data.data);
+      }
+    } catch (error) {
+      console.error('Search error:', error);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-gray-50 flex flex-col font-sans overflow-hidden">
+      {/* Loading Overlay */}
+      {isLoading && (
+        <div className="fixed inset-0 z-50 bg-black/90 flex flex-col items-center justify-center text-white p-6">
+          <div className="relative">
+            <div className="w-24 h-24 border-4 border-blue-500/30 rounded-full"></div>
+            <div className="absolute inset-0 flex items-center justify-center">
+              <div className="w-20 h-20 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+            </div>
+          </div>
+          <h2 className="text-xl font-bold mt-4 mb-2">
+            {uploadProgress > 0 ? 'Uploading Data...' : 'Processing...'}
+          </h2>
+          {uploadProgress > 0 && (
+            <>
+              <div className="w-64 bg-gray-700 rounded-full h-3 overflow-hidden mt-2">
+                <div 
+                  className="bg-green-500 h-full transition-all duration-300" 
+                  style={{ width: `${uploadProgress}%` }}
+                ></div>
+              </div>
+              <p className="mt-2 font-mono text-sm">{uploadProgress}%</p>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Header */}
+      <header className="bg-white shadow-sm z-30 shrink-0 border-b border-gray-200">
+        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="bg-gradient-to-br from-blue-600 to-blue-800 text-white p-2 rounded-lg shadow">
+              <i className="fa-solid fa-boxes-stacked text-lg"></i>
+            </div>
+            <div>
+              <h1 className="text-lg font-bold text-gray-800">Wardrobe Inventory Pro</h1>
+              <div className="flex items-center gap-2">
+                <p className="text-xs text-gray-500">Real-time Inventory Management</p>
+                <div className={`w-2 h-2 rounded-full ${
+                  serverStatus === 'connected' ? 'bg-green-500 animate-pulse' :
+                  serverStatus === 'disconnected' ? 'bg-red-500' : 'bg-yellow-500'
+                }`}></div>
+                <span className={`text-xs ${
+                  serverStatus === 'connected' ? 'text-green-600' :
+                  serverStatus === 'disconnected' ? 'text-red-600' : 'text-yellow-600'
+                }`}>
+                  {serverStatus === 'connected' ? 'Connected' : 
+                   serverStatus === 'disconnected' ? 'Disconnected' : 'Checking...'}
+                </span>
+              </div>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-3">
+            {/* Search Bar */}
+            <div className="relative">
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
+                placeholder="Search items..."
+                className="w-64 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <button
+                onClick={handleSearch}
+                className="absolute right-2 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              >
+                <i className="fa-solid fa-search"></i>
+              </button>
             </div>
 
-            {/* MAIN */}
-            <main className="ml-64 p-8 flex-1 no-print overflow-hidden">
-                <header className="flex justify-between items-center mb-8">
-                    <h2 className="text-3xl font-bold text-gray-700">{activeTab.replace('_',' ')}</h2>
-                    <div className="text-right text-sm text-gray-500"><p>{new Date().toLocaleDateString('id-ID', {weekday:'long', day:'numeric', month:'long', year:'numeric'})}</p></div>
-                </header>
+            {/* Upload Button */}
+            <label className="cursor-pointer bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-all shadow hover:shadow-md">
+              <i className="fa-solid fa-upload"></i>
+              Upload Excel
+              <input 
+                type="file" 
+                accept=".xlsx,.xls,.csv" 
+                className="hidden" 
+                onChange={handleFileUpload}
+                disabled={isLoading}
+              />
+            </label>
 
-                {/* CONTENT */}
-                {activeTab === 'DASHBOARD' && (
-                    <div className="grid grid-cols-3 gap-6">
-                        <div className="bg-white p-6 rounded-xl shadow border-l-4 border-blue-500">
-                            <p className="text-gray-400 text-sm font-bold">TOTAL ASSETS</p>
-                            <p className="text-4xl font-bold text-gray-800">{stats.total}</p>
-                        </div>
-                        <div className="bg-white p-6 rounded-xl shadow border-l-4 border-orange-500">
-                            <p className="text-gray-400 text-sm font-bold">DIPINJAM</p>
-                            <p className="text-4xl font-bold text-orange-600">{stats.on_loan}</p>
-                        </div>
-                        <div className="bg-white p-6 rounded-xl shadow border-l-4 border-green-500">
-                            <p className="text-gray-400 text-sm font-bold">TERSEDIA</p>
-                            <p className="text-4xl font-bold text-green-600">{stats.available}</p>
-                        </div>
-                    </div>
-                )}
+            {/* Loan System Button */}
+            <button
+              onClick={() => setShowLoanSystem(true)}
+              className="bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-all shadow hover:shadow-md"
+            >
+              <i className="fa-solid fa-handshake"></i>
+              Loan System
+            </button>
 
-                {activeTab === 'ITEMS' && (
-                    <div className="bg-white rounded-xl shadow h-[calc(100vh-150px)] flex flex-col">
-                        <div className="p-4 border-b flex gap-4">
-                            <input className="flex-1 p-2 border rounded" placeholder="Cari..." value={filterInput} onChange={e=>setFilterInput(e.target.value)} />
-                            <button onClick={fetchItems} className="bg-gray-800 text-white px-4 rounded">Cari</button>
-                        </div>
-                        <div className="flex-1 overflow-auto">
-                            <table className="w-full text-sm text-left">
-                                <thead className="bg-gray-100 sticky top-0"><tr><th className="p-3">Barcode</th><th className="p-3">Name</th><th className="p-3">Receive No</th><th className="p-3">Brand</th><th className="p-3">Sex</th><th className="p-3">Size</th><th className="p-3">Price</th><th className="p-3">Status</th></tr></thead>
-                                <tbody>{items.map(i=>(
-                                    <tr key={i.id} className="border-b hover:bg-gray-50">
-                                        <td className="p-3 font-mono text-blue-600">{i.barcode}</td>
-                                        <td className="p-3 font-bold">{i.item_name}</td>
-                                        <td className="p-3 text-gray-500">{i.receive_no}</td>
-                                        <td className="p-3">{i.brand}</td>
-                                        <td className="p-3">{i.sex}</td>
-                                        <td className="p-3">{i.size}</td>
-                                        <td className="p-3">{formatMoney(i.price)}</td>
-                                        <td className="p-3"><span className={`px-2 py-1 rounded text-xs ${i.status==='Available'?'bg-green-100 text-green-800':'bg-orange-100 text-orange-800'}`}>{i.status}</span></td>
-                                    </tr>
-                                ))}</tbody>
-                            </table>
-                        </div>
-                    </div>
-                )}
+            {/* Return System Button */}
+            <button
+              onClick={() => setShowReturnSystem(true)}
+              className="bg-gradient-to-r from-orange-600 to-orange-700 hover:from-orange-700 hover:to-orange-800 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-all shadow hover:shadow-md"
+            >
+              <i className="fa-solid fa-arrow-right-to-bracket"></i>
+              Return System
+            </button>
 
-                {activeTab === 'UPLOAD' && (
-                    <div className="max-w-lg mx-auto mt-10 bg-white p-10 rounded-2xl shadow-lg text-center border-2 border-dashed border-blue-300">
-                        <i className="fa-solid fa-cloud-arrow-up text-6xl text-blue-200 mb-6"></i>
-                        <h2 className="text-xl font-bold mb-4">Upload Excel Stock</h2>
-                        <input type="file" onChange={handleUpload} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100" />
-                        <p className="text-xs text-gray-400 mt-4">*Format sesuai Excel: Receive No., Receive Date, Barcode, Name, Sex, Color, Size, Brand, Price</p>
-                    </div>
-                )}
-
-                {activeTab === 'LOAN' && (
-                    <div className="flex gap-6 h-[calc(100vh-150px)]">
-                        <div className="w-1/3 bg-white p-6 rounded-xl shadow overflow-y-auto">
-                            <h3 className="font-bold text-blue-600 mb-4">Form Peminjaman</h3>
-                            <div className="space-y-4">
-                                <input list="borrowers" className="w-full p-2 border rounded" placeholder="Cari Peminjam..." onChange={e=>{const b=borrowers.find(x=>x.name===e.target.value); if(b) setLoanForm({...loanForm, borrower_id:b.id})}} />
-                                <datalist id="borrowers">{borrowers.map(b=><option key={b.id} value={b.name}>{b.nik} - {b.position}</option>)}</datalist>
-                                <input className="w-full p-2 border rounded" placeholder="Program" value={loanForm.program} onChange={e=>setLoanForm({...loanForm, program:e.target.value})} />
-                                <textarea className="w-full p-2 border rounded" placeholder="Keperluan" value={loanForm.reason} onChange={e=>setLoanForm({...loanForm, reason:e.target.value})} />
-                                <div className="border border-dashed p-2 rounded text-center"><p className="text-xs text-gray-400">Tanda Tangan</p><SignatureCanvas ref={sigPad} canvasProps={{className:'w-full h-24 bg-white rounded'}} /><button onClick={()=>sigPad.current.clear()} className="text-xs text-red-500">Clear</button></div>
-                                <button onClick={submitLoan} className="w-full bg-blue-600 text-white py-3 rounded font-bold">PROSES</button>
-                            </div>
-                        </div>
-                        <div className="w-2/3 flex flex-col gap-4">
-                            <div className="bg-white p-4 rounded-xl shadow"><input autoFocus className="w-full p-3 border-2 border-blue-400 rounded text-lg font-mono" placeholder="Scan Barcode..." value={scanInput} onChange={e=>setScanInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'){handleScanLoan(scanInput); setScanInput('');}}} /></div>
-                            <div className="bg-white flex-1 rounded-xl shadow p-4 overflow-auto"><h3 className="font-bold mb-4">Keranjang ({cart.length})</h3><table className="w-full text-sm text-left"><thead className="bg-gray-50"><tr><th className="p-2">Barcode</th><th className="p-2">Nama</th><th className="p-2">Aksi</th></tr></thead><tbody>{cart.map((c,i)=>(<tr key={i} className="border-b"><td className="p-2 font-mono text-blue-600">{c.barcode}</td><td className="p-2">{c.item_name}</td><td className="p-2"><button onClick={()=>setCart(cart.filter(x=>x.barcode!==c.barcode))} className="text-red-500"><i className="fa-solid fa-trash"></i></button></td></tr>))}</tbody></table></div>
-                        </div>
-                    </div>
-                )}
-
-                {activeTab === 'RETURN' && (
-                    <div className="max-w-lg mx-auto mt-10 bg-white p-10 rounded-2xl shadow text-center">
-                        <h2 className="text-2xl font-bold mb-4">Scan Pengembalian</h2>
-                        <input autoFocus className="w-full p-4 border-2 border-green-500 rounded-xl text-center text-xl font-mono" placeholder="Scan Barcode..." value={scanInput} onChange={e=>setScanInput(e.target.value)} onKeyDown={e=>{if(e.key==='Enter'){handleReturn(scanInput); setScanInput('');}}} />
-                    </div>
-                )}
-                
-                {/* Simplified Logs & Users View for brevity in full code */}
-                {activeTab === 'LOGS' && <div className="bg-white p-6 rounded-xl shadow h-[calc(100vh-150px)] overflow-auto"><table className="w-full text-sm text-left"><thead className="bg-gray-100 sticky top-0"><tr><th className="p-3">Waktu</th><th className="p-3">User</th><th className="p-3">Aksi</th><th className="p-3">Deskripsi</th></tr></thead><tbody>{logs.map(l=>(<tr key={l.id} className="border-b"><td className="p-3 text-gray-500">{new Date(l.created_at).toLocaleString()}</td><td className="p-3 font-bold">{l.user_name}</td><td className="p-3">{l.action_type}</td><td className="p-3">{l.description}</td></tr>))}</tbody></table></div>}
-                
-                {activeTab === 'USERS' && <div className="bg-white p-6 rounded-xl shadow"><h3 className="font-bold mb-4">Buat User Staff</h3><form onSubmit={handleCreateUser} className="grid grid-cols-5 gap-2 mb-6"><input className="p-2 border rounded" placeholder="Username" value={newUser.username} onChange={e=>setNewUser({...newUser, username:e.target.value})} /><input className="p-2 border rounded" type="password" placeholder="Pass" value={newUser.password} onChange={e=>setNewUser({...newUser, password:e.target.value})} /><input className="p-2 border rounded" placeholder="Nama" value={newUser.fullname} onChange={e=>setNewUser({...newUser, fullname:e.target.value})} /><input className="p-2 border rounded" placeholder="NIK" value={newUser.nik} onChange={e=>setNewUser({...newUser, nik:e.target.value})} /><button className="bg-blue-600 text-white rounded font-bold">ADD</button></form><table className="w-full text-sm text-left"><thead className="bg-gray-100"><tr><th className="p-2">User</th><th className="p-2">Nama</th><th className="p-2">NIK</th></tr></thead><tbody>{usersList.map(u=>(<tr key={u.id} className="border-b"><td className="p-2">{u.username}</td><td className="p-2">{u.fullname}</td><td className="p-2">{u.nik}</td></tr>))}</tbody></table></div>}
-                
-                {activeTab === 'BORROWERS' && <div className="bg-white p-6 rounded-xl shadow"><h3 className="font-bold mb-4">Buat Peminjam</h3><form onSubmit={handleCreateBorrower} className="grid grid-cols-5 gap-2 mb-6"><input className="p-2 border rounded" placeholder="NIK" value={newBorrower.nik} onChange={e=>setNewBorrower({...newBorrower, nik:e.target.value})} /><input className="p-2 border rounded" placeholder="Nama" value={newBorrower.name} onChange={e=>setNewBorrower({...newBorrower, name:e.target.value})} /><input className="p-2 border rounded" placeholder="HP" value={newBorrower.phone} onChange={e=>setNewBorrower({...newBorrower, phone:e.target.value})} /><input className="p-2 border rounded" placeholder="Jabatan" value={newBorrower.position} onChange={e=>setNewBorrower({...newBorrower, position:e.target.value})} /><button className="bg-green-600 text-white rounded font-bold">ADD</button></form><div className="h-96 overflow-auto"><table className="w-full text-sm text-left"><thead className="bg-gray-100 sticky top-0"><tr><th className="p-2">NIK</th><th className="p-2">Nama</th><th className="p-2">Jabatan</th></tr></thead><tbody>{borrowers.map(b=>(<tr key={b.id} className="border-b"><td className="p-2">{b.nik}</td><td className="p-2 font-bold">{b.name}</td><td className="p-2">{b.position}</td></tr>))}</tbody></table></div></div>}
-
-            </main>
+            {/* Export Dropdown */}
+            <div className="relative group">
+              <button className="bg-gray-100 hover:bg-gray-200 p-2.5 rounded-lg text-gray-600 transition-colors">
+                <i className="fa-solid fa-download text-lg"></i>
+              </button>
+              <div className="absolute right-0 top-full mt-2 w-56 bg-white shadow-xl rounded-lg border border-gray-200 hidden group-hover:block p-2 z-50">
+                <div className="px-3 py-2 text-xs font-bold text-gray-400 uppercase tracking-wide" id="export-btn-text">
+                  Download Report
+                </div>
+                <div className="space-y-1">
+                  <button 
+                    onClick={() => handleExport('SCANNED')}
+                    className="w-full text-left p-2 hover:bg-green-50 text-sm text-green-700 font-medium rounded transition-colors flex items-center gap-2"
+                  >
+                    <i className="fa-solid fa-check-circle text-green-500"></i>
+                    Scanned Items
+                  </button>
+                  <button 
+                    onClick={() => handleExport('ON_LOAN')}
+                    className="w-full text-left p-2 hover:bg-orange-50 text-sm text-orange-700 font-medium rounded transition-colors flex items-center gap-2"
+                  >
+                    <i className="fa-solid fa-handshake text-orange-500"></i>
+                    Items on Loan
+                  </button>
+                  <button 
+                    onClick={() => handleExport('PENDING')}
+                    className="w-full text-left p-2 hover:bg-yellow-50 text-sm text-yellow-700 font-medium rounded transition-colors flex items-center gap-2"
+                  >
+                    <i className="fa-solid fa-clock text-yellow-500"></i>
+                    Available Items
+                  </button>
+                  <button 
+                    onClick={() => handleExport('ALL')}
+                    className="w-full text-left p-2 hover:bg-blue-50 text-sm text-blue-700 font-medium rounded transition-colors flex items-center gap-2 border-b border-gray-100"
+                  >
+                    <i className="fa-solid fa-list text-blue-500"></i>
+                    All Data
+                  </button>
+                  <button 
+                    onClick={handleClearData}
+                    className="w-full text-left p-2 hover:bg-red-50 text-sm text-red-600 font-medium rounded transition-colors flex items-center gap-2 mt-1"
+                  >
+                    <i className="fa-solid fa-trash-alt text-red-500"></i>
+                    Clear All Data
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-    );
+
+        {/* Navigation Menu */}
+        <div className="border-t border-gray-200">
+          <div className="max-w-7xl mx-auto px-4">
+            <div className="flex space-x-8">
+              <button
+                onClick={() => setActiveMenu('inventory')}
+                className={`py-3 px-1 border-b-2 font-medium text-sm transition-colors ${
+                  activeMenu === 'inventory'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <i className="fa-solid fa-boxes-stacked mr-2"></i>
+                Inventory Management
+              </button>
+              <button
+                onClick={() => setShowBorrowerManagement(true)}
+                className={`py-3 px-1 border-b-2 font-medium text-sm transition-colors ${
+                  activeMenu === 'borrowers'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <i className="fa-solid fa-users mr-2"></i>
+                Borrower Management
+              </button>
+              <button
+                onClick={() => setShowLoanSystem(true)}
+                className={`py-3 px-1 border-b-2 font-medium text-sm transition-colors ${
+                  activeMenu === 'loans'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <i className="fa-solid fa-handshake mr-2"></i>
+                Loan Management
+              </button>
+              <button
+                onClick={() => setShowReturnSystem(true)}
+                className={`py-3 px-1 border-b-2 font-medium text-sm transition-colors ${
+                  activeMenu === 'returns'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <i className="fa-solid fa-arrow-right-to-bracket mr-2"></i>
+                Return Management
+              </button>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="flex-1 w-full max-w-7xl mx-auto overflow-y-auto lg:overflow-hidden flex flex-col lg:flex-row gap-4 p-4 lg:p-6">
+        {/* Left Panel */}
+        <div className="w-full lg:w-5/12 flex flex-col shrink-0 space-y-4">
+          {/* Stats Dashboard */}
+          <DashboardStats 
+            total={stats.total} 
+            scanned={stats.scanned} 
+            onLoan={stats.on_loan}
+            available={stats.available}
+          />
+          
+          {/* Feedback Display */}
+          <FeedbackDisplay feedback={lastScanFeedback} />
+          
+          {/* Scanner Controls */}
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200 space-y-4">
+            {/* Manual Scanner Input */}
+            <ScannerInput 
+              onScan={handleScan} 
+              lastResult={lastScanFeedback.status}
+              isProcessing={isProcessing}
+            />
+            
+            {/* Camera Scanner Button */}
+            <button 
+              onClick={handleCameraStart}
+              disabled={isProcessing || serverStatus !== 'connected'}
+              className={`w-full py-4 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 active:scale-[0.98] text-white rounded-xl shadow-md font-bold flex justify-center items-center gap-3 text-lg transition-all duration-200 ${
+                (isProcessing || serverStatus !== 'connected') ? 'opacity-50 cursor-not-allowed' : ''
+              }`}
+            >
+              <i className="fa-solid fa-camera text-2xl"></i>
+              SCAN WITH CAMERA
+            </button>
+            
+            {/* Server Status */}
+            <div className={`p-3 rounded-lg ${
+              serverStatus === 'connected' ? 'bg-green-50 border border-green-200' :
+              serverStatus === 'disconnected' ? 'bg-red-50 border border-red-200' :
+              'bg-yellow-50 border border-yellow-200'
+            }`}>
+              <p className={`text-sm font-medium flex items-center gap-2 ${
+                serverStatus === 'connected' ? 'text-green-800' :
+                serverStatus === 'disconnected' ? 'text-red-800' : 'text-yellow-800'
+              }`}>
+                <i className={`fa-solid ${
+                  serverStatus === 'connected' ? 'fa-check-circle text-green-500' :
+                  serverStatus === 'disconnected' ? 'fa-times-circle text-red-500' :
+                  'fa-exclamation-circle text-yellow-500'
+                }`}></i>
+                Server: {serverStatus === 'connected' ? 'Connected' : 
+                        serverStatus === 'disconnected' ? 'Disconnected - Please start server' : 
+                        'Checking...'}
+              </p>
+              <button 
+                onClick={testServerConnection}
+                className="mt-2 text-xs text-blue-600 hover:text-blue-800 font-medium"
+              >
+                Test Connection
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Right Panel - Inventory Table */}
+        <div className="w-full lg:w-7/12 flex flex-col shrink-0 h-[500px] lg:h-auto lg:flex-1 pb-16 lg:pb-4">
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 h-full flex flex-col">
+            <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+              <h2 className="text-lg font-bold text-gray-800 flex items-center gap-2">
+                <i className="fa-solid fa-table text-blue-500"></i>
+                Latest Inventory Items
+                <span className="text-sm font-normal text-gray-500">
+                  ({tableData.length} items)
+                </span>
+              </h2>
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-500">
+                  Showing {tableData.length} of {stats.total}
+                </span>
+                <button 
+                  onClick={refreshData}
+                  className="text-sm text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                >
+                  <i className="fa-solid fa-sync-alt"></i>
+                  Refresh
+                </button>
+              </div>
+            </div>
+            <div className="flex-1 overflow-auto">
+              <InventoryTable items={tableData} />
+            </div>
+            <div className="p-3 border-t border-gray-200 bg-gray-50 text-center">
+              <p className="text-gray-500 text-sm">
+                Total: <span className="font-bold">{stats.total}</span> | 
+                Available: <span className="font-bold text-green-600">{stats.available}</span> | 
+                On Loan: <span className="font-bold text-orange-600">{stats.on_loan}</span> | 
+                Scanned: <span className="font-bold text-blue-600">{stats.scanned}</span>
+              </p>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      {/* Camera Scanner Modal */}
+      {showCamera && (
+        <CameraScanner 
+          onScanSuccess={handleCameraScanSuccess}
+          onClose={() => setShowCamera(false)}
+          onError={(error) => {
+            console.error('Camera error:', error);
+            AudioPresets.ITEM_NOT_FOUND();
+            setLastScanFeedback({
+              status: 'ERROR',
+              message: `Camera Error: ${error}`
+            });
+            setShowCamera(false);
+          }}
+        />
+      )}
+
+      {/* Loan System Modal */}
+      {showLoanSystem && (
+        <LoanSystem onClose={() => setShowLoanSystem(false)} />
+      )}
+
+      {/* Return System Modal */}
+      {showReturnSystem && (
+        <ReturnSystem onClose={() => setShowReturnSystem(false)} />
+      )}
+
+      {/* Borrower Management Modal */}
+      {showBorrowerManagement && (
+        <BorrowerManagement onClose={() => setShowBorrowerManagement(false)} />
+      )}
+
+      {/* Footer */}
+      <footer className="bg-white border-t border-gray-200 p-3 text-center z-30 shrink-0">
+        <p className="text-gray-500 text-sm">
+          © {new Date().getFullYear()} Wardrobe Inventory Pro • 
+          <span className={`font-medium mx-2 ${
+            serverStatus === 'connected' ? 'text-green-600' : 'text-red-600'
+          }`}>
+            Server: {serverStatus === 'connected' ? 'Connected' : 'Disconnected'}
+          </span>
+          • Last update: {new Date().toLocaleTimeString('id-ID')}
+        </p>
+      </footer>
+
+      {/* Debug Buttons */}
+      <div className="fixed bottom-4 left-4 z-40 flex flex-col gap-2">
+        <button
+          onClick={testAudio}
+          className="px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white text-xs rounded shadow-md transition-colors opacity-70 hover:opacity-100"
+        >
+          Test Audio
+        </button>
+        <button
+          onClick={testServerConnection}
+          className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs rounded shadow-md transition-colors opacity-70 hover:opacity-100"
+        >
+          Test Server
+        </button>
+      </div>
+
+      {/* Audio Status Indicator */}
+      {audioInitialized && (
+        <div className="fixed bottom-4 right-4 z-40 flex items-center gap-2 bg-gray-800/80 backdrop-blur-sm rounded-lg p-2 border border-gray-700">
+          <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+          <span className="text-white text-xs">Audio Ready</span>
+        </div>
+      )}
+    </div>
+  );
 };
 
 export default App;

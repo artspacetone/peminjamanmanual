@@ -1,236 +1,212 @@
-import React, { useEffect, useState } from 'react'
-import { ScanFeedback, getStatusColor, getStatusIcon, formatPrice, formatDate } from '../types'
+// components/FeedbackDisplay.tsx
+import React from 'react';
+import { ScanFeedback } from '../types/index.ts';
 
 interface FeedbackDisplayProps {
-  feedback: ScanFeedback
-  autoClear?: boolean
-  clearTimeout?: number
+  feedback: ScanFeedback;
 }
 
-const FeedbackDisplay: React.FC<FeedbackDisplayProps> = ({
-  feedback,
-  autoClear = true,
-  clearTimeout = 3000
-}) => {
-  const [visible, setVisible] = useState(false)
-  const [countdown, setCountdown] = useState(clearTimeout / 1000)
+const FeedbackDisplay: React.FC<FeedbackDisplayProps> = ({ feedback }) => {
+  const { status, message, item } = feedback;
 
-  // Show/hide animation
-  useEffect(() => {
-    if (feedback.status !== 'IDLE') {
-      setVisible(true)
-      setCountdown(clearTimeout / 1000)
-    } else {
-      setVisible(false)
-    }
-  }, [feedback.status, clearTimeout])
-
-  // Auto clear feedback
-  useEffect(() => {
-    if (autoClear && feedback.status !== 'IDLE' && feedback.status !== 'PROCESSING') {
-      const timer = setTimeout(() => {
-        setVisible(false)
-      }, clearTimeout)
-
-      const countdownTimer = setInterval(() => {
-        setCountdown(prev => {
-          if (prev <= 1) {
-            clearInterval(countdownTimer)
-            return 0
-          }
-          return prev - 1
-        })
-      }, 1000)
-
-      return () => {
-        clearTimeout(timer)
-        clearInterval(countdownTimer)
-      }
-    }
-  }, [feedback.status, autoClear, clearTimeout])
-
-  // Get status text color
-  const getStatusText = () => {
-    switch (feedback.status) {
+  // Get styling based on status
+  const getStatusStyles = () => {
+    switch (status) {
       case 'FOUND':
-        return 'Scan Successful'
+        return {
+          container: 'bg-gradient-to-br from-green-50 to-green-100 border-green-300',
+          icon: 'fa-check-circle text-green-600',
+          iconBg: 'bg-green-100',
+          text: 'text-green-800',
+          border: 'border-green-400'
+        };
       case 'NOT_FOUND':
-        return 'Item Not Found'
+        return {
+          container: 'bg-gradient-to-br from-red-50 to-red-100 border-red-300',
+          icon: 'fa-times-circle text-red-600',
+          iconBg: 'bg-red-100',
+          text: 'text-red-800',
+          border: 'border-red-400'
+        };
       case 'DUPLICATE':
-        return 'Already Scanned'
+        return {
+          container: 'bg-gradient-to-br from-yellow-50 to-yellow-100 border-yellow-300',
+          icon: 'fa-exclamation-circle text-yellow-600',
+          iconBg: 'bg-yellow-100',
+          text: 'text-yellow-800',
+          border: 'border-yellow-400'
+        };
       case 'ERROR':
-        return 'Error Occurred'
+        return {
+          container: 'bg-gradient-to-br from-red-50 to-red-100 border-red-300',
+          icon: 'fa-exclamation-triangle text-red-600',
+          iconBg: 'bg-red-100',
+          text: 'text-red-800',
+          border: 'border-red-400'
+        };
       case 'PROCESSING':
-        return 'Processing...'
-      case 'SCANNING':
-        return 'Scanning...'
-      default:
-        return 'Ready to Scan'
+        return {
+          container: 'bg-gradient-to-br from-blue-50 to-blue-100 border-blue-300',
+          icon: 'fa-spinner fa-spin text-blue-600',
+          iconBg: 'bg-blue-100',
+          text: 'text-blue-800',
+          border: 'border-blue-400'
+        };
+      case 'SUCCESS':
+        return {
+          container: 'bg-gradient-to-br from-green-50 to-green-100 border-green-300',
+          icon: 'fa-check-circle text-green-600',
+          iconBg: 'bg-green-100',
+          text: 'text-green-800',
+          border: 'border-green-400'
+        };
+      default: // IDLE
+        return {
+          container: 'bg-gradient-to-br from-gray-50 to-gray-100 border-gray-300',
+          icon: 'fa-barcode text-gray-600',
+          iconBg: 'bg-gray-100',
+          text: 'text-gray-800',
+          border: 'border-gray-400'
+        };
     }
-  }
+  };
 
-  // Get status icon
-  const getStatusEmoji = () => {
-    switch (feedback.status) {
-      case 'FOUND':
-        return '🎉'
-      case 'NOT_FOUND':
-        return '❌'
-      case 'DUPLICATE':
-        return '⚠️'
-      case 'ERROR':
-        return '🚨'
-      case 'PROCESSING':
-        return '⏳'
-      case 'SCANNING':
-        return '📷'
-      default:
-        return '📦'
-    }
-  }
-
-  // Handle manual close
-  const handleClose = () => {
-    setVisible(false)
-  }
-
-  if (!visible || feedback.status === 'IDLE') {
-    return (
-      <div className="bg-gradient-to-br from-gray-50 to-gray-100 rounded-2xl border border-gray-200 p-6 text-center">
-        <div className="w-16 h-16 mx-auto mb-4 bg-gray-200 rounded-full flex items-center justify-center">
-          <i className="fa-solid fa-barcode text-2xl text-gray-400"></i>
-        </div>
-        <h3 className="text-lg font-bold text-gray-700 mb-2">Waiting for Scan</h3>
-        <p className="text-gray-500 text-sm">Enter barcode or use camera to scan items</p>
-      </div>
-    )
-  }
+  const styles = getStatusStyles();
 
   return (
-    <div className={`rounded-2xl border-2 ${getStatusColor(feedback.status)} p-6 animate-slide-up`}>
-      {/* Header */}
-      <div className="flex justify-between items-start mb-4">
+    <div className={`rounded-xl border-2 p-6 shadow-sm transition-all duration-300 ${styles.container} ${styles.border}`}>
+      {/* Status Header */}
+      <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
-          <div className="w-12 h-12 rounded-xl bg-white flex items-center justify-center">
-            <span className="text-2xl">{getStatusEmoji()}</span>
+          <div className={`p-3 rounded-full ${styles.iconBg}`}>
+            <i className={`fa-solid text-2xl ${styles.icon}`}></i>
           </div>
           <div>
-            <h3 className="text-xl font-bold">{getStatusText()}</h3>
-            <p className="text-sm opacity-80">{feedback.message}</p>
+            <h3 className={`text-lg font-bold ${styles.text}`}>
+              {status === 'FOUND' ? 'Item Found!' :
+               status === 'NOT_FOUND' ? 'Item Not Found' :
+               status === 'DUPLICATE' ? 'Already Scanned' :
+               status === 'ERROR' ? 'Error' :
+               status === 'PROCESSING' ? 'Processing...' :
+               status === 'SUCCESS' ? 'Success!' :
+               'Ready to Scan'}
+            </h3>
+            <p className="text-sm text-gray-600">
+              {status === 'IDLE' ? 'Waiting for barcode scan...' :
+               status === 'PROCESSING' ? 'Please wait...' :
+               new Date().toLocaleTimeString('id-ID')}
+            </p>
           </div>
         </div>
         
-        <div className="flex items-center gap-3">
-          {autoClear && feedback.status !== 'PROCESSING' && (
-            <div className="text-xs font-mono bg-white/30 px-2 py-1 rounded">
-              {countdown}s
-            </div>
-          )}
-          <button
-            onClick={handleClose}
-            className="w-8 h-8 rounded-full bg-white/50 hover:bg-white flex items-center justify-center transition-colors"
-          >
-            <i className="fa-solid fa-xmark text-sm"></i>
-          </button>
+        {/* Status Indicator */}
+        <div className={`px-3 py-1 rounded-full text-xs font-bold ${styles.text} ${styles.iconBg}`}>
+          {status}
         </div>
       </div>
 
-      {/* Item Details */}
-      {feedback.item && (
-        <div className="bg-white/50 backdrop-blur-sm rounded-xl p-4 mb-4 border border-white/30">
-          <div className="flex items-start justify-between mb-3">
-            <div>
-              <h4 className="font-bold text-lg">{feedback.item.item_name}</h4>
-              <p className="text-sm text-gray-600">
-                <i className="fa-solid fa-barcode mr-2"></i>
-                {feedback.item.barcode}
-              </p>
-            </div>
-            <div className="text-right">
-              <div className="text-lg font-bold text-blue-600">
-                {formatPrice(feedback.item.price)}
-              </div>
-              <div className="text-xs text-gray-500">
-                {feedback.item.type}
-              </div>
-            </div>
-          </div>
+      {/* Main Message */}
+      <div className="mb-4">
+        <div className={`text-2xl font-bold text-center p-4 rounded-lg ${styles.text} bg-white/50`}>
+          {message}
+        </div>
+      </div>
+
+      {/* Item Details (if available) */}
+      {item && status === 'FOUND' && (
+        <div className="mt-6 p-4 bg-white rounded-lg border border-gray-200">
+          <h4 className="font-bold text-gray-800 mb-2 flex items-center gap-2">
+            <i className="fa-solid fa-info-circle text-blue-500"></i>
+            Item Details
+          </h4>
           
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-            <div className="bg-white/80 rounded-lg p-2">
-              <p className="text-xs text-gray-500">Status</p>
-              <p className="font-medium">{feedback.item.status}</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <p className="text-xs text-gray-500">Barcode</p>
+              <p className="font-mono font-bold text-gray-800">{item.barcode}</p>
             </div>
-            <div className="bg-white/80 rounded-lg p-2">
-              <p className="text-xs text-gray-500">Color</p>
-              <p className="font-medium">{feedback.item.color}</p>
+            
+            <div className="space-y-1">
+              <p className="text-xs text-gray-500">Name</p>
+              <p className="font-medium text-gray-800">{item.item_name}</p>
             </div>
-            <div className="bg-white/80 rounded-lg p-2">
+            
+            <div className="space-y-1">
               <p className="text-xs text-gray-500">Brand</p>
-              <p className="font-medium">{feedback.item.brand}</p>
+              <p className="font-medium text-gray-800">{item.brand || '-'}</p>
             </div>
-            <div className="bg-white/80 rounded-lg p-2">
-              <p className="text-xs text-gray-500">Scanned</p>
-              <p className="font-medium">
-                {feedback.item.is_scanned ? (
-                  <span className="text-green-600">
-                    <i className="fa-solid fa-check mr-1"></i>
-                    Yes
-                  </span>
-                ) : (
-                  <span className="text-red-600">
-                    <i className="fa-solid fa-xmark mr-1"></i>
-                    No
-                  </span>
-                )}
+            
+            <div className="space-y-1">
+              <p className="text-xs text-gray-500">Color</p>
+              <p className="font-medium text-gray-800">{item.color || '-'}</p>
+            </div>
+            
+            <div className="space-y-1">
+              <p className="text-xs text-gray-500">Size</p>
+              <p className="font-medium text-gray-800">{item.size || '-'}</p>
+            </div>
+            
+            <div className="space-y-1">
+              <p className="text-xs text-gray-500">Price</p>
+              <p className="font-medium text-gray-800">
+                {item.price ? new Intl.NumberFormat('id-ID', {
+                  style: 'currency',
+                  currency: 'IDR',
+                  minimumFractionDigits: 0
+                }).format(item.price) : '-'}
               </p>
             </div>
           </div>
           
-          {feedback.item.scan_timestamp && (
+          {item.receive_no && (
             <div className="mt-3 pt-3 border-t border-gray-200">
-              <p className="text-xs text-gray-500">
-                <i className="fa-solid fa-clock mr-1"></i>
-                Scanned at: {formatDate(feedback.item.scan_timestamp)}
-              </p>
+              <p className="text-xs text-gray-500">Receive No.</p>
+              <p className="font-medium text-gray-800">{item.receive_no}</p>
             </div>
           )}
         </div>
       )}
 
-      {/* Processing Indicator */}
-      {(feedback.status === 'PROCESSING' || feedback.status === 'SCANNING') && (
-        <div className="text-center py-4">
-          <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-gray-600">
-            {feedback.status === 'SCANNING' ? 'Scanning with camera...' : 'Processing scan...'}
-          </p>
+      {/* Scan Instructions */}
+      {status === 'IDLE' && (
+        <div className="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+          <h4 className="font-bold text-blue-800 mb-2 flex items-center gap-2">
+            <i className="fa-solid fa-graduation-cap text-blue-500"></i>
+            How to Scan
+          </h4>
+          <ul className="text-blue-700 text-sm space-y-1">
+            <li>• Point barcode scanner at item barcode</li>
+            <li>• Press scanner trigger button</li>
+            <li>• Scanner will beep on successful read</li>
+            <li>• Item status updates automatically</li>
+          </ul>
         </div>
       )}
 
-      {/* Action Buttons */}
-      {feedback.item && (
-        <div className="flex gap-3">
-          <button
-            onClick={() => window.location.reload()}
-            className="flex-1 bg-white hover:bg-gray-50 text-gray-700 font-medium py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
-          >
-            <i className="fa-solid fa-rotate-right"></i>
-            Scan Another
-          </button>
-          <button
-            onClick={() => {
-              // Copy barcode to clipboard
-              navigator.clipboard.writeText(feedback.item!.barcode)
-            }}
-            className="px-4 bg-blue-100 hover:bg-blue-200 text-blue-700 font-medium py-3 rounded-xl transition-colors"
-          >
-            <i className="fa-solid fa-copy"></i>
-          </button>
+      {/* Status Legend */}
+      <div className="mt-6 pt-4 border-t border-gray-300">
+        <h5 className="text-xs font-bold text-gray-500 uppercase mb-2">Status Legend</h5>
+        <div className="flex flex-wrap gap-2">
+          <div className="flex items-center gap-1">
+            <div className="w-3 h-3 rounded-full bg-green-500"></div>
+            <span className="text-xs text-gray-600">Found</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="w-3 h-3 rounded-full bg-red-500"></div>
+            <span className="text-xs text-gray-600">Not Found</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
+            <span className="text-xs text-gray-600">Duplicate</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="w-3 h-3 rounded-full bg-blue-500"></div>
+            <span className="text-xs text-gray-600">Processing</span>
+          </div>
         </div>
-      )}
+      </div>
     </div>
-  )
-}
+  );
+};
 
-export default FeedbackDisplay
+export default FeedbackDisplay;

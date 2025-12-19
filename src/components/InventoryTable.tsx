@@ -1,323 +1,239 @@
-import React, { useState, useMemo } from 'react'
-import { InventoryItem, formatPrice, formatDate } from '../types'
+// components/InventoryTable.tsx
+import React from 'react';
+import { InventoryItem, formatDate, formatCurrency } from '../types/index.ts';
 
 interface InventoryTableProps {
-  items: InventoryItem[]
-  onItemClick?: (item: InventoryItem) => void
-  isLoading?: boolean
-  showActions?: boolean
+  items: InventoryItem[];
+  onItemClick?: (item: InventoryItem) => void;
 }
 
-const InventoryTable: React.FC<InventoryTableProps> = ({
-  items,
-  onItemClick,
-  isLoading = false,
-  showActions = true
-}) => {
-  const [sortField, setSortField] = useState<keyof InventoryItem>('created_at')
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
-  const [searchTerm, setSearchTerm] = useState('')
-  const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
-
-  // Filter and sort items
-  const filteredAndSortedItems = useMemo(() => {
-    let filtered = [...items]
-
-    // Apply search filter
-    if (searchTerm) {
-      const term = searchTerm.toLowerCase()
-      filtered = filtered.filter(item =>
-        item.barcode.toLowerCase().includes(term) ||
-        item.item_name.toLowerCase().includes(term) ||
-        item.brand.toLowerCase().includes(term) ||
-        item.type.toLowerCase().includes(term)
-      )
-    }
-
-    // Apply sorting
-    filtered.sort((a, b) => {
-      const aValue = a[sortField]
-      const bValue = b[sortField]
-
-      if (aValue === undefined || bValue === undefined) return 0
-
-      if (typeof aValue === 'string' && typeof bValue === 'string') {
-        return sortDirection === 'asc'
-          ? aValue.localeCompare(bValue)
-          : bValue.localeCompare(aValue)
-      }
-
-      if (typeof aValue === 'number' && typeof bValue === 'number') {
-        return sortDirection === 'asc' ? aValue - bValue : bValue - aValue
-      }
-
-      return 0
-    })
-
-    return filtered
-  }, [items, searchTerm, sortField, sortDirection])
-
-  // Handle sort
-  const handleSort = (field: keyof InventoryItem) => {
-    if (sortField === field) {
-      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc')
-    } else {
-      setSortField(field)
-      setSortDirection('desc')
-    }
-  }
-
-  // Handle select all
-  const handleSelectAll = () => {
-    if (selectedItems.size === filteredAndSortedItems.length) {
-      setSelectedItems(new Set())
-    } else {
-      setSelectedItems(new Set(filteredAndSortedItems.map(item => item.id)))
-    }
-  }
-
-  // Handle select item
-  const handleSelectItem = (id: string) => {
-    const newSelected = new Set(selectedItems)
-    if (newSelected.has(id)) {
-      newSelected.delete(id)
-    } else {
-      newSelected.add(id)
-    }
-    setSelectedItems(newSelected)
-  }
-
-  // Handle item click
-  const handleItemClick = (item: InventoryItem) => {
+const InventoryTable: React.FC<InventoryTableProps> = ({ items, onItemClick }) => {
+  // Handle row click
+  const handleRowClick = (item: InventoryItem) => {
     if (onItemClick) {
-      onItemClick(item)
+      onItemClick(item);
     }
-  }
+  };
 
-  // Get sort icon
-  const getSortIcon = (field: keyof InventoryItem) => {
-    if (sortField !== field) return 'fa-sort'
-    return sortDirection === 'asc' ? 'fa-sort-up' : 'fa-sort-down'
-  }
+  // Get status badge styling
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case 'Available':
+        return 'bg-green-100 text-green-800';
+      case 'On Loan':
+        return 'bg-orange-100 text-orange-800';
+      case 'Scanned':
+        return 'bg-blue-100 text-blue-800';
+      case 'Pending':
+        return 'bg-yellow-100 text-yellow-800';
+      default:
+        return 'bg-gray-100 text-gray-800';
+    }
+  };
+
+  // Sort items by updated_at (newest first)
+  const sortedItems = [...items].sort((a, b) => 
+    new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+  );
 
   return (
-    <div className="h-full flex flex-col">
-      {/* Table Header with Controls */}
-      <div className="p-4 border-b border-gray-200 bg-gray-50 rounded-t-xl">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div>
-            <h3 className="text-lg font-bold text-gray-800">Inventory Items</h3>
-            <p className="text-sm text-gray-500">
-              Showing {filteredAndSortedItems.length} of {items.length} items
-              {searchTerm && ` (filtered by "${searchTerm}")`}
-            </p>
-          </div>
-          
-          <div className="flex items-center gap-3">
-            {/* Search Input */}
-            <div className="relative">
-              <input
-                type="text"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Search items..."
-                className="w-full md:w-64 px-4 py-2 bg-white border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500"
-              />
-              <i className="fa-solid fa-search absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400"></i>
-            </div>
-
-            {/* Selected Items Actions */}
-            {selectedItems.size > 0 && (
+    <div className="overflow-x-auto">
+      <table className="w-full">
+        <thead className="bg-gray-50">
+          <tr>
+            <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
               <div className="flex items-center gap-2">
-                <span className="text-sm text-blue-600 font-medium">
-                  {selectedItems.size} selected
-                </span>
-                <button className="text-red-500 hover:text-red-700">
-                  <i className="fa-solid fa-trash"></i>
-                </button>
+                <i className="fa-solid fa-barcode"></i>
+                Barcode
               </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Loading State */}
-      {isLoading ? (
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-center">
-            <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-            <p className="text-gray-600">Loading inventory...</p>
-          </div>
-        </div>
-      ) : filteredAndSortedItems.length === 0 ? (
-        <div className="flex-1 flex flex-col items-center justify-center p-8">
-          <div className="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mb-4">
-            <i className="fa-solid fa-inbox text-3xl text-gray-400"></i>
-          </div>
-          <h4 className="text-lg font-bold text-gray-700 mb-2">No items found</h4>
-          <p className="text-gray-500 text-center max-w-md">
-            {searchTerm
-              ? `No items match your search "${searchTerm}". Try a different search term.`
-              : 'No inventory items available. Upload an Excel file to get started.'}
-          </p>
-        </div>
-      ) : (
-        /* Table Content */
-        <div className="flex-1 overflow-auto">
-          <table className="w-full">
-            <thead className="bg-gray-50 sticky top-0">
-              <tr>
-                {showActions && (
-                  <th className="p-4 w-12">
-                    <input
-                      type="checkbox"
-                      checked={selectedItems.size === filteredAndSortedItems.length}
-                      onChange={handleSelectAll}
-                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                    />
-                  </th>
-                )}
-                <th 
-                  className="p-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
-                  onClick={() => handleSort('barcode')}
-                >
-                  <div className="flex items-center gap-1">
-                    Barcode
-                    <i className={`fa-solid ${getSortIcon('barcode')} text-gray-400`}></i>
+            </th>
+            <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <div className="flex items-center gap-2">
+                <i className="fa-solid fa-tag"></i>
+                Item Name
+              </div>
+            </th>
+            <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <div className="flex items-center gap-2">
+                <i className="fa-solid fa-briefcase"></i>
+                Brand
+              </div>
+            </th>
+            <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <div className="flex items-center gap-2">
+                <i className="fa-solid fa-palette"></i>
+                Color
+              </div>
+            </th>
+            <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <div className="flex items-center gap-2">
+                <i className="fa-solid fa-ruler"></i>
+                Size
+              </div>
+            </th>
+            <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <div className="flex items-center gap-2">
+                <i className="fa-solid fa-money-bill-wave"></i>
+                Price
+              </div>
+            </th>
+            <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <div className="flex items-center gap-2">
+                <i className="fa-solid fa-info-circle"></i>
+                Status
+              </div>
+            </th>
+            <th className="py-3 px-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+              <div className="flex items-center gap-2">
+                <i className="fa-solid fa-calendar"></i>
+                Last Updated
+              </div>
+            </th>
+          </tr>
+        </thead>
+        
+        <tbody className="bg-white divide-y divide-gray-200">
+          {sortedItems.length === 0 ? (
+            <tr>
+              <td colSpan={8} className="py-8 text-center">
+                <div className="flex flex-col items-center justify-center text-gray-400">
+                  <i className="fa-solid fa-inbox text-4xl mb-2"></i>
+                  <p className="text-lg font-medium">No inventory items found</p>
+                  <p className="text-sm">Upload Excel file or scan items to get started</p>
+                </div>
+              </td>
+            </tr>
+          ) : (
+            sortedItems.map((item) => (
+              <tr 
+                key={item.id} 
+                onClick={() => handleRowClick(item)}
+                className={`hover:bg-gray-50 transition-colors cursor-pointer ${
+                  item.status === 'Scanned' ? 'bg-green-50/30' : ''
+                }`}
+              >
+                {/* Barcode */}
+                <td className="py-3 px-4">
+                  <div className="font-mono font-bold text-gray-900">
+                    {item.barcode}
                   </div>
-                </th>
-                <th 
-                  className="p-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
-                  onClick={() => handleSort('item_name')}
-                >
-                  <div className="flex items-center gap-1">
-                    Item Name
-                    <i className={`fa-solid ${getSortIcon('item_name')} text-gray-400`}></i>
-                  </div>
-                </th>
-                <th className="p-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Brand/Type
-                </th>
-                <th 
-                  className="p-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
-                  onClick={() => handleSort('price')}
-                >
-                  <div className="flex items-center gap-1">
-                    Price
-                    <i className={`fa-solid ${getSortIcon('price')} text-gray-400`}></i>
-                  </div>
-                </th>
-                <th 
-                  className="p-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
-                  onClick={() => handleSort('is_scanned')}
-                >
-                  <div className="flex items-center gap-1">
-                    Status
-                    <i className={`fa-solid ${getSortIcon('is_scanned')} text-gray-400`}></i>
-                  </div>
-                </th>
-                <th className="p-4 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200">
-              {filteredAndSortedItems.map((item) => (
-                <tr 
-                  key={item.id}
-                  className={`hover:bg-blue-50 transition-colors ${selectedItems.has(item.id) ? 'bg-blue-50' : ''}`}
-                >
-                  {showActions && (
-                    <td className="p-4">
-                      <input
-                        type="checkbox"
-                        checked={selectedItems.has(item.id)}
-                        onChange={() => handleSelectItem(item.id)}
-                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                      />
-                    </td>
+                  {item.receive_no && (
+                    <div className="text-xs text-gray-500">
+                      No: {item.receive_no}
+                    </div>
                   )}
-                  <td className="p-4">
-                    <div 
-                      className="font-mono font-bold text-blue-600 cursor-pointer hover:text-blue-800"
-                      onClick={() => handleItemClick(item)}
-                    >
-                      {item.barcode}
+                </td>
+                
+                {/* Item Name */}
+                <td className="py-3 px-4">
+                  <div className="font-medium text-gray-900">
+                    {item.item_name}
+                  </div>
+                  {item.receive_date && (
+                    <div className="text-xs text-gray-500">
+                      Received: {formatDate(item.receive_date)}
                     </div>
-                  </td>
-                  <td className="p-4">
-                    <div className="font-medium">{item.item_name}</div>
-                    <div className="text-sm text-gray-500">{item.color}</div>
-                  </td>
-                  <td className="p-4">
-                    <div className="font-medium">{item.brand}</div>
-                    <div className="text-sm text-gray-500">{item.type}</div>
-                  </td>
-                  <td className="p-4 font-bold">
-                    {formatPrice(item.price)}
-                  </td>
-                  <td className="p-4">
-                    <div className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium ${
-                      item.is_scanned
-                        ? 'bg-green-100 text-green-800'
-                        : 'bg-yellow-100 text-yellow-800'
-                    }`}>
-                      <i className={`fa-solid ${item.is_scanned ? 'fa-check' : 'fa-clock'}`}></i>
-                      {item.is_scanned ? 'Scanned' : 'Pending'}
-                    </div>
-                    {item.scan_timestamp && (
-                      <div className="text-xs text-gray-500 mt-1">
-                        {formatDate(item.scan_timestamp)}
-                      </div>
+                  )}
+                </td>
+                
+                {/* Brand */}
+                <td className="py-3 px-4">
+                  <div className="text-gray-900">
+                    {item.brand || '-'}
+                  </div>
+                </td>
+                
+                {/* Color */}
+                <td className="py-3 px-4">
+                  <div className="flex items-center gap-2">
+                    {item.color ? (
+                      <>
+                        <div 
+                          className="w-4 h-4 rounded-full border border-gray-300"
+                          style={{ 
+                            backgroundColor: item.color.toLowerCase().includes('red') ? '#ef4444' :
+                                           item.color.toLowerCase().includes('blue') ? '#3b82f6' :
+                                           item.color.toLowerCase().includes('green') ? '#10b981' :
+                                           item.color.toLowerCase().includes('black') ? '#000000' :
+                                           item.color.toLowerCase().includes('white') ? '#ffffff' :
+                                           item.color.toLowerCase().includes('yellow') ? '#fbbf24' :
+                                           '#9ca3af'
+                          }}
+                        ></div>
+                        <span>{item.color}</span>
+                      </>
+                    ) : (
+                      <span className="text-gray-400">-</span>
                     )}
-                  </td>
-                  <td className="p-4">
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => handleItemClick(item)}
-                        className="w-8 h-8 rounded-lg bg-blue-100 hover:bg-blue-200 text-blue-600 flex items-center justify-center transition-colors"
-                        title="View Details"
-                      >
-                        <i className="fa-solid fa-eye"></i>
-                      </button>
-                      <button
-                        onClick={() => navigator.clipboard.writeText(item.barcode)}
-                        className="w-8 h-8 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 flex items-center justify-center transition-colors"
-                        title="Copy Barcode"
-                      >
-                        <i className="fa-solid fa-copy"></i>
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </div>
+                </td>
+                
+                {/* Size */}
+                <td className="py-3 px-4">
+                  <div className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                    {item.size || '-'}
+                  </div>
+                </td>
+                
+                {/* Price */}
+                <td className="py-3 px-4">
+                  <div className="font-medium text-gray-900">
+                    {formatCurrency(item.price)}
+                  </div>
+                </td>
+                
+                {/* Status */}
+                <td className="py-3 px-4">
+                  <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${getStatusBadge(item.status)}`}>
+                    {item.status === 'Scanned' && (
+                      <i className="fa-solid fa-check mr-1"></i>
+                    )}
+                    {item.status === 'On Loan' && (
+                      <i className="fa-solid fa-handshake mr-1"></i>
+                    )}
+                    {item.status}
+                  </span>
+                </td>
+                
+                {/* Last Updated */}
+                <td className="py-3 px-4">
+                  <div className="text-sm text-gray-500">
+                    {formatDate(item.updated_at)}
+                  </div>
+                </td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+      
+      {/* Summary */}
+      {sortedItems.length > 0 && (
+        <div className="bg-gray-50 px-4 py-3 text-xs text-gray-500 border-t border-gray-200">
+          <div className="flex justify-between items-center">
+            <div>
+              Showing <span className="font-bold">{sortedItems.length}</span> items
+              {sortedItems.length !== items.length && ` of ${items.length}`}
+            </div>
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-1">
+                <div className="w-3 h-3 rounded-full bg-green-500"></div>
+                <span>Available: {items.filter(i => i.status === 'Available').length}</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <div className="w-3 h-3 rounded-full bg-blue-500"></div>
+                <span>Scanned: {items.filter(i => i.status === 'Scanned').length}</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <div className="w-3 h-3 rounded-full bg-orange-500"></div>
+                <span>On Loan: {items.filter(i => i.status === 'On Loan').length}</span>
+              </div>
+            </div>
+          </div>
         </div>
       )}
-
-      {/* Table Footer */}
-      <div className="p-4 border-t border-gray-200 bg-gray-50 rounded-b-xl">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="text-sm text-gray-500">
-            Showing <span className="font-bold">{filteredAndSortedItems.length}</span> items
-            {searchTerm && ` (filtered)`}
-          </div>
-          
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 bg-green-500 rounded-full"></div>
-              <span className="text-xs text-gray-600">Scanned</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-3 h-3 bg-yellow-500 rounded-full"></div>
-              <span className="text-xs text-gray-600">Pending</span>
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
-  )
-}
+  );
+};
 
-export default InventoryTable
+export default InventoryTable;
